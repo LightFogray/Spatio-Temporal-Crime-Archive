@@ -1,0 +1,7 @@
+# Data files
+data/raw/*.geojson
+data/raw/*.csv
+data/processed/adj_crime_dynamic_gaussian.npy
+data/processed/X.npy
+
+# Model checkpoints

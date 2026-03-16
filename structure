@@ -1,0 +1,48 @@
+crime_prediction_project
+│
+├ data
+│   ├ raw
+│   │   ├ crime.csv
+│   │   ├ poi.geojson
+│   │   ├ landuse.geojson
+│   │   ├ nightlight.tif
+│   │   ├ weather.csv
+│   │   └ road_network.shp
+│   │
+│   └ processed
+│       ├ grid.shp
+│       ├ crime_counts.npy
+│       ├ poi_features.npy
+│       ├ landuse_features.npy
+│       ├ nightlight_features.npy
+│       └ weather_features.npy
+│
+├ preprocessing
+│   ├ build_grid.py
+│   ├ crime_features.py
+│   ├ poi_features.py
+│   ├ landuse_features.py
+│   ├ nightlight_features.py
+│   ├ road_features.py
+│   └ green_features.py
+│
+├ graph
+│   ├ spatial_graph.py
+│   ├ distance_graph.py
+│   ├ road_graph.py
+│   └ multi_scale_graph.py
+│
+├ model
+│   ├ stgcn.py
+│   ├ gcn.py
+│   ├ temporal_block.py
+│   └ predictor.py
+│
+├ training
+│   ├ dataset.py
+│   ├ train.py
+│   └ evaluate.py
+│
+└ experiments
+    ├ baseline_models.py
+    └ ablation_study.py
