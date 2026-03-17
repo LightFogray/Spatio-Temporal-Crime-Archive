@@ -100,16 +100,7 @@ def dynamic_adj_crime_gaussian(window=30, sigma=None):
     print("Gaussian crime dynamic graph saved, shape:", A_crime_dynamic.shape)
     return A_crime_dynamic
 
-# def build_all_adj():
-    # build_adj_adaptive()
-    # build_adj_distance()
-    # build_adj_crime()
-    # dynamic_adj_crime()
-    # A_spatial = np.load("data/processed/adj_adaptive.npy")
-    # A_distance = np.load("data/processed/adj_distance.npy")
-    # A_crime = np.load("data/processed/adj_crime_dynamic.npy")
-    # A = 0.5*A_spatial + 0.3*A_distance + 0.2*A_crime 
-    # np.save("data/processed/mixed_graph_adj_matrix.npy", A.astype(np.float32))
+
 dynamic_adj_crime_gaussian()
 
 # if __name__ == "__main__":
