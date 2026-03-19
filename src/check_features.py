@@ -12,7 +12,7 @@ files = [
 # "Y.npy",
 # "adj_adaptive.npy",
 # "adj_distance.npy",
-# "adj_crime_dynamic_gaussian.npy",
+"adj_crime_dynamic_gaussian.npy",
 "bike_inflow_1246.npy",
 "bike_outflow_1246.npy",
 "taxi_inflow_1246.npy",

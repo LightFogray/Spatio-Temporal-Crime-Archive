@@ -5,21 +5,23 @@ import numpy as np
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
 class CrimeDataset(Dataset):
-    def __init__(self, X, Y, A_crime):
+    def __init__(self, X, Y, A_crime, OD):
         """
         X: (num_samples, T, N, F)
         Y: (num_samples, N)
         A_crime: (num_samples, N, N)
+        OD: (num_samples, N, 4)
         """
         self.X = torch.tensor(X, dtype=torch.float32)
         self.Y = torch.tensor(Y, dtype=torch.float32)
         self.A_crime = torch.tensor(A_crime, dtype=torch.float32)
+        self.OD = torch.tensor(OD, dtype=torch.float32)
 
     def __len__(self):
         return min(len(self.X), len(self.A_crime), len(self.Y))
 
     def __getitem__(self, idx):
-        return (self.X[idx], self.A_crime[idx], self.Y[idx])
+        return (self.X[idx], self.A_crime[idx], self.OD[idx], self.Y[idx])
 
 # ----------------------------
 # 图融合自注意力模块
@@ -104,6 +106,8 @@ class Decoupled_STGCN_ZINB(nn.Module):
     def __init__(self, in_dim, static_idx, hidden_dim=64):
         super().__init__()
         self.static_idx = static_idx
+        self.alpha_static = nn.Parameter(torch.tensor(0.5))
+        self.alpha_dynamic = nn.Parameter(torch.tensor(0.5))
         
         # --- 静态支路：处理环境背景 ---
         self.static_net = nn.Sequential(
@@ -126,27 +130,56 @@ class Decoupled_STGCN_ZINB(nn.Module):
         self.fc_pi = nn.Sequential(nn.Linear(combine_dim, 1), nn.Sigmoid())     # 零值概率
         self.fc_mu = nn.Sequential(nn.Linear(combine_dim, 1), nn.Softplus())    # 均值
         self.fc_theta = nn.Sequential(nn.Linear(combine_dim, 1), nn.Softplus()) # 离散度
-        
-    def forward(self, X, A1, A2, A3, A_hg):
+    def build_od_graph(self, od_feat, K=10):
+        # od_feat: (B,N,4)
+        norm = torch.norm(od_feat, dim=-1, keepdim=True)
+        od_norm = od_feat / (norm + 1e-6)
+
+        sim = torch.matmul(od_norm, od_norm.transpose(1,2))  # (B,N,N)
+
+        topk_val, topk_idx = torch.topk(sim, K, dim=-1)
+
+        A = torch.zeros_like(sim)
+        A.scatter_(-1, topk_idx, topk_val)
+
+        return A / (A.sum(dim=-1, keepdim=True) + 1e-6)
+    
+    def forward(self, X, A1, A2, A3, A_hg, OD):
         # X: (B, T, N, F)
-        
+        # OD: (B, N, 4)
+
         # 1. 解耦特征
         # 静态特征取序列最后时刻即可 (因为它们在时间维是重复的)
         x_static = X[:, -1, :, :self.static_idx]      # (B, N, F_static)
         x_dynamic = X[:, :, :, self.static_idx:]     # (B, T, N, F_dynamic)
         
         # 2. 静态支路 (融合超图)
-        h_static = self.static_net(x_static)          # (B, N, H)
+        alpha_s = torch.sigmoid(self.alpha_static)
+        A_static = alpha_s * A_spatial + (1 - alpha_s) * A_distance          # (B, N, H)
+        
+        h_static = self.static_net(x_static) # 特征编码
+        h_static = torch.matmul(A_static, h_static) # 空间传播
         A_hg = A_hg / (A_hg.sum(dim=-1, keepdim=True) + 1e-6)
         h_static = torch.matmul(A_hg, h_static)
         
         # 3. 动态支路 (原有 STGCN 逻辑)
         # 注意：这里可以根据你的逻辑选择用 A1, A2 还是 A3 融合后的图
-        h_dyn1 = self.dynamic_stgcn(x_dynamic, A1)
-        h_dyn2 = self.dynamic_stgcn(x_dynamic, A2)
-        h_dyn3 = self.dynamic_stgcn(x_dynamic, A3)
-        h_dynamic = self.graph_fusion(h_dyn1, h_dyn2, h_dyn3)
-        h_dynamic = self.temporal_att(h_dynamic)      # (B, N, H)
+        # === OD 构图 ===
+        A_od = self.build_od_graph(OD)   # (B,N,N)
+
+        # === 融合动态图 ===
+        # A_fused = 0.5 * A3 + 0.5 * A_od   # A3 就是 crime_dynamic
+        alpha_d = torch.sigmoid(self.alpha_dynamic)
+        # === 用融合图替代 ===
+        A_dynamic = alpha_d * A3 + (1 - alpha_d) * A_od
+        h_dynamic = self.dynamic_stgcn(x_dynamic, A_dynamic)
+        h_dynamic = self.temporal_att(h_dynamic)
+        
+        # h_dyn1 = self.dynamic_stgcn(x_dynamic, A1)
+        # h_dyn2 = self.dynamic_stgcn(x_dynamic, A2)
+        # h_dyn3 = self.dynamic_stgcn(x_dynamic, A3)
+        # h_dynamic = self.graph_fusion(h_dyn1, h_dyn2, h_dyn3)
+        # h_dynamic = self.temporal_att(h_dynamic)      # (B, N, H)
         
         # 4. 特征拼接 (解耦融合)
         h_final = torch.cat([h_static, h_dynamic], dim=-1) # (B, N, 2H)
@@ -164,6 +197,7 @@ class Decoupled_STGCN_ZINB(nn.Module):
 # =============================
 X = np.load("data/processed/X.npy")   # (T', N, F)
 Y = np.load("data/processed/Y.npy")   # (T', N)
+OD = np.load("data/processed/dynamic_od_flow_1246.npy")  # (T', N, 4)
 
 A_spatial = np.load("data/processed/adj_adaptive.npy")
 A_distance = np.load("data/processed/adj_distance.npy")
@@ -221,13 +255,18 @@ A_crime_train = A_crime_dynamic[window:window+train_end]
 A_crime_val = A_crime_dynamic[window+train_end:window+val_end]
 A_crime_test = A_crime_dynamic[window+val_end:window+num_samples]
 
+# OD 流切片
+OD_train = OD[window:window+train_end]
+OD_val = OD[window+train_end:window+val_end]
+OD_test = OD[window+val_end:window+num_samples]
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 batch_size = 4
 
-train_dataset = CrimeDataset(X_train, Y_train, A_crime_train)
-val_dataset   = CrimeDataset(X_val, Y_val, A_crime_val)
-test_dataset  = CrimeDataset(X_test, Y_test, A_crime_test)
+train_dataset = CrimeDataset(X_train, Y_train, A_crime_train, OD_train)
+val_dataset   = CrimeDataset(X_val, Y_val, A_crime_val, OD_val)
+test_dataset  = CrimeDataset(X_test, Y_test, A_crime_test, OD_test)
 
 train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
 val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
@@ -297,18 +336,18 @@ def train_model(model, train_loader, val_loader, A_spatial, A_distance,A_hg,
         model.train()
         train_losses = []
 
-        for X_batch, A_crime_batch, Y_batch in train_loader:
+        for X_batch, A_crime_batch,OD_batch, Y_batch in train_loader:
             X_batch = X_batch.to(device)
             Y_batch = Y_batch.to(device)
             A_crime_batch = A_crime_batch.to(device)
-
+            OD_batch = OD_batch.to(device)
             # 检查 NaN / 极值
             if torch.isnan(A_crime_batch).any():
                 A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
 
             optimizer.zero_grad()
             # 训练步：
-            pi, mu, theta,h_static, h_dynamic = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg)
+            pi, mu, theta,h_static, h_dynamic = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg, OD_batch)
             # 防止梯度爆炸 
             mu = torch.clamp(mu, max=100)
             theta = torch.clamp(theta, max=100)
@@ -329,14 +368,15 @@ def train_model(model, train_loader, val_loader, A_spatial, A_distance,A_hg,
         model.eval()
         val_losses = []
         with torch.no_grad():
-            for X_batch, A_crime_batch, Y_batch in val_loader:
+            for X_batch, A_crime_batch, OD_batch, Y_batch in val_loader:
                 X_batch = X_batch.to(device)
                 Y_batch = Y_batch.to(device)
                 A_crime_batch = A_crime_batch.to(device)
+                OD_batch = OD_batch.to(device)
 
                 if torch.isnan(A_crime_batch).any():
                     A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
-                pi, mu, theta = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg)
+                pi, mu, theta = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg, OD_batch)
                 mu = torch.clamp(mu, max=100)
                 theta = torch.clamp(theta, max=100)
                 loss = zinb_loss(Y_batch, pi, mu, theta)
