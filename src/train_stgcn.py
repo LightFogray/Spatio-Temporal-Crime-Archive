@@ -376,7 +376,7 @@ def train_model(model, train_loader, val_loader, A_spatial, A_distance,A_hg,
 
                 if torch.isnan(A_crime_batch).any():
                     A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
-                pi, mu, theta = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg, OD_batch)
+                pi, mu, theta, h_static, h_dynamic = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg, OD_batch)
                 mu = torch.clamp(mu, max=100)
                 theta = torch.clamp(theta, max=100)
                 loss = zinb_loss(Y_batch, pi, mu, theta)
@@ -449,15 +449,16 @@ def test_model(model, test_loader, A_spatial, A_distance, A_hg, device):
     preds, targets = [], []
 
     with torch.no_grad():
-        for X_batch, A_crime_batch, Y_batch in test_loader:
+        for X_batch, A_crime_batch,OD_batch, Y_batch in test_loader:
             X_batch = X_batch.to(device)
             Y_batch = Y_batch.to(device)
             A_crime_batch = A_crime_batch.to(device)
+            OD_batch = OD_batch.to(device)
 
             if torch.isnan(A_crime_batch).any():
                 A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
 
-            pi, mu, theta = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg)
+            pi, mu, theta,h_static, h_dynamic = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg,OD_batch)
             pred = torch.clamp((1 - pi) * mu, min=0)
             preds.append(pred.detach().cpu().numpy())
             targets.append(Y_batch.detach().cpu().numpy())
