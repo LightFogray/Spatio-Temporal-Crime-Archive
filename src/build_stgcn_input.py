@@ -31,21 +31,21 @@ T,N = crime.shape
 # 构造滞后特征
 # -------------------------
 crime_lag = []
-
-for i in range(7):
+T_lag = 7
+for i in range(T_lag):
 
     crime_lag.append(
-        crime[i:T-7+i]
+        crime[i:T-T_lag+i]
     )
 crime_lag = np.stack(crime_lag,axis=-1)
-# (T-7,N,3)
+# (T-T_lag,N,3)
 # -------------------------
 # 读取气象数据
 # -------------------------
 weather = np.load("data/processed/weather_features.npy")
-# (T,7)
+# (T,T_lag)
 # rain, temperature, snow
-weather = weather[7:]
+weather = weather[T_lag:]
 # -------------------------
 # 扩展气象到空间维
 # -------------------------
@@ -60,10 +60,27 @@ weather_expand = np.repeat(
 # -------------------------
 spatial_expand = np.repeat(
     spatial_features[np.newaxis,:,:],
-    T-7,
+    T-T_lag,
     axis=0
 )
-# (T-7,N,F)
+# (T-T_lag,N,F)
+
+# 拼接OD流特征
+# 对齐时间步（滞后窗口）
+# 以滞后7天为例
+
+dynamic_od_lag = []
+dynamic_od_daily = np.load("data/processed/dynamic_od_flow_1246.npy")
+T_day = dynamic_od_daily.shape[0]
+for i in range(T_lag):
+    dynamic_od_lag.append(dynamic_od_daily[i:T_day-T_lag+i])
+dynamic_od_lag = np.stack(dynamic_od_lag, axis=-1)  # (T-T_lag, N, 4, 7)
+
+# 如果希望将 4 个通道和 7 天滞后展开成单一维度,4D->2D
+T_final, N, C, L = dynamic_od_lag.shape
+dynamic_od_lag_reshape = dynamic_od_lag.reshape(T_final, N, C*L)  # (T-T_lag, N, 12)
+
+print("="*10,dynamic_od_lag_reshape.shape)
 
 # -------------------------
 # 拼接最终输入
@@ -72,10 +89,11 @@ X = np.concatenate([
     spatial_expand,
     weather_expand,
     crime_lag
+    # dynamic_od_lag_reshape
 ],axis=2)
 
 # label
-Y = crime[7:]
+Y = crime[T_lag:]
 
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler

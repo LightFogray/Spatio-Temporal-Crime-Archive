@@ -35,7 +35,11 @@ class GraphFusionAttention(nn.Module):
         x_stack = torch.stack([x1, x2, x3], dim=-1)  
         # (B,T,N,H,3)
         # attention score
-        score = self.att(x1)   
+        score1 = self.att(x1)
+        score2 = self.att(x2)
+        score3 = self.att(x3)
+
+        score = torch.cat([score1, score2, score3], dim=-1) 
         # (B,T,N,3)
         weight = torch.softmax(score, dim=-1)
         weight = weight.unsqueeze(-2)  
@@ -133,7 +137,8 @@ class Decoupled_STGCN_ZINB(nn.Module):
         
         # 2. 静态支路 (融合超图)
         h_static = self.static_net(x_static)          # (B, N, H)
-        h_static = torch.matmul(A_hg, h_static)       # 超图聚合
+        A_hg = A_hg / (A_hg.sum(dim=-1, keepdim=True) + 1e-6)
+        h_static = torch.matmul(A_hg, h_static)
         
         # 3. 动态支路 (原有 STGCN 逻辑)
         # 注意：这里可以根据你的逻辑选择用 A1, A2 还是 A3 融合后的图
@@ -150,8 +155,8 @@ class Decoupled_STGCN_ZINB(nn.Module):
         pi = self.fc_pi(h_final).squeeze(-1)
         mu = self.fc_mu(h_final).squeeze(-1)
         theta = self.fc_theta(h_final).squeeze(-1)
-        
-        return pi, mu, theta
+        # 加入解耦约束
+        return pi, mu, theta, h_static, h_dynamic
 
 
 # =============================
@@ -218,7 +223,7 @@ A_crime_test = A_crime_dynamic[window+val_end:window+num_samples]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-batch_size = 8
+batch_size = 4
 
 train_dataset = CrimeDataset(X_train, Y_train, A_crime_train)
 val_dataset   = CrimeDataset(X_val, Y_val, A_crime_val)
@@ -303,11 +308,15 @@ def train_model(model, train_loader, val_loader, A_spatial, A_distance,A_hg,
 
             optimizer.zero_grad()
             # 训练步：
-            pi, mu, theta = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg)
+            pi, mu, theta,h_static, h_dynamic = model(X_batch, A_spatial, A_distance, A_crime_batch, A_hg)
             # 防止梯度爆炸 
             mu = torch.clamp(mu, max=100)
             theta = torch.clamp(theta, max=100)
-            loss = zinb_loss(Y_batch, pi, mu, theta)
+            # reshape: (B,N,H) -> (B*N,H)
+            h_s = h_static.reshape(-1, h_static.shape[-1])
+            h_d = h_dynamic.reshape(-1, h_dynamic.shape[-1])
+            loss_orth = torch.norm(torch.matmul(h_s.T, h_d), p='fro')
+            loss = zinb_loss(Y_batch, pi, mu, theta) + 1e-3 * loss_orth
             loss.backward()
 
             # 梯度裁剪

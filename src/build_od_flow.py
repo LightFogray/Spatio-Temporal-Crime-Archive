@@ -1,137 +1,119 @@
-import pandas as pd
+import polars as pl
 import numpy as np
-from collections import defaultdict
+import pandas as pd
 
 # ==============================
-# 1️⃣ 参数设置（根据你数据改）
+# 参数
 # ==============================
 GRID_SIZE = 0.01
-LON_MIN, LAT_MIN = -88, 41   # Chicago 大致范围
-NUM_X = 200                  # 横向网格数（根据范围调整）
-N = 1246                     # 你的节点数
+LON_MIN, LAT_MIN = -88, 41
+NUM_X, NUM_Y = 100, 100
+N = NUM_X * NUM_Y
+
+file_paths = {
+    "bike": "./OD_data/divvy_clean.csv",
+    "taxi": "./OD_data/taxi_clean.csv"
+}
+
+columns_map = {
+    "bike": ("start_lng", "start_lat", "end_lng", "end_lat", "started_at"),
+    "taxi": ("Pickup Centroid Longitude", "Pickup Centroid Latitude",
+             "Dropoff Centroid Longitude", "Dropoff Centroid Latitude",
+             "Trip Start Timestamp")
+}
 
 # ==============================
-# 2️⃣ 坐标 → grid id
+# 坐标 → grid id
 # ==============================
-def coord_to_grid(lon, lat):
-    try:
-        x = int((lon - LON_MIN) / GRID_SIZE)
-        y = int((lat - LAT_MIN) / GRID_SIZE)
-        gid = y * NUM_X + x
-
-        if gid < 0 or gid >= N:
-            return None
-        return gid
-    except:
-        return None
+def coord_to_grid_polars(df, lon_col, lat_col, new_col):
+    df = df.with_columns([
+        ((pl.col(lon_col) - LON_MIN) / GRID_SIZE).cast(pl.Int32).alias("x"),
+        ((pl.col(lat_col) - LAT_MIN) / GRID_SIZE).cast(pl.Int32).alias("y")
+    ])
+    df = df.with_columns(
+        (pl.col("x") + pl.col("y") * NUM_X).alias(new_col)
+    ).drop(["x", "y"])
+    return df
 
 # ==============================
-# 3️⃣ 时间离散
+# 时间 → 小时
 # ==============================
-def time_to_bin(ts):
-    try:
-        return pd.to_datetime(ts).floor("H")
-    except:
-        return None
+def time_to_bin_polars(df, time_col, new_col_name):
+    if time_col == "Trip Start Timestamp":  # 出租车数据
+        df = df.with_columns(
+            pl.col(time_col)
+              .str.strptime(pl.Datetime, "%m/%d/%Y %I:%M:%S %p", strict=False)
+              .dt.truncate("1h")
+              .alias(new_col_name)
+        )
+    else:  # 自行车或其他数据，Polars 默认解析即可
+        df = df.with_columns(
+            pl.col(time_col)
+              .str.strptime(pl.Datetime, strict=False)
+              .dt.truncate("1h")
+              .alias(new_col_name)
+        )
+    return df
 
 # ==============================
-# 4️⃣ 构建 OD
+# 构建 OD 流
 # ==============================
-def build_od(df, start_lon, start_lat, end_lon, end_lat, time_col):
-    OD = defaultdict(lambda: np.zeros((N, N)))
+def build_flow_numpy_polars(file_path, cols, prefix):
+    print(f"📍 Processing {prefix}...")
 
-    for _, row in df.iterrows():
-        i = coord_to_grid(row[start_lon], row[start_lat])
-        j = coord_to_grid(row[end_lon], row[end_lat])
-        t = time_to_bin(row[time_col])
+    df = pl.read_csv(file_path, columns=list(cols))
 
-        if i is None or j is None or t is None:
+    # 丢掉空值
+    df = df.drop_nulls()
+
+    # 网格 ID
+    df = coord_to_grid_polars(df, cols[0], cols[1], "origin_grid")
+    df = coord_to_grid_polars(df, cols[2], cols[3], "dest_grid")
+
+    # 丢掉非法网格
+    df = df.filter(
+        (pl.col("origin_grid") >= 0) & (pl.col("origin_grid") < N) &
+        (pl.col("dest_grid") >= 0) & (pl.col("dest_grid") < N)
+    )
+
+    # 时间
+    df = time_to_bin_polars(df, cols[4], "hour")
+    df = df.drop_nulls(subset=["hour"])
+
+    # 转 pandas 方便生成连续时间序列
+    df_pd = df.to_pandas()
+    df_pd["hour"] = pd.to_datetime(df_pd["hour"])
+
+    min_time, max_time = df_pd["hour"].min(), df_pd["hour"].max()
+    all_hours = pd.date_range(min_time, max_time, freq="H")
+    hour_to_idx = {h: i for i, h in enumerate(all_hours)}
+    T = len(all_hours)
+
+    inflow_arr = np.zeros((T, N), dtype=np.float32)
+    outflow_arr = np.zeros((T, N), dtype=np.float32)
+
+    for _, row in df_pd.iterrows():
+        t = hour_to_idx.get(row["hour"])
+        if t is None:
             continue
+        inflow_arr[t, int(row["dest_grid"])] += 1
+        outflow_arr[t, int(row["origin_grid"])] += 1
 
-        OD[t][i, j] += 1
+    # 去极值 + log
+    inflow_arr = np.log1p(inflow_arr)
+    outflow_arr = np.log1p(outflow_arr)
 
-    return OD
+    # 保存
+    np.save(f"{prefix}_inflow.npy", inflow_arr)
+    np.save(f"{prefix}_outflow.npy", outflow_arr)
+    print(f"✅ {prefix} done: inflow {inflow_arr.shape}, outflow {outflow_arr.shape}\n")
 
-# ==============================
-# 5️⃣ OD → flow
-# ==============================
-def od_to_flow_fixed(OD, full_time):
-    T = len(full_time)
-
-    inflow = np.zeros((T, N))
-    outflow = np.zeros((T, N))
-
-    for t_idx, t in enumerate(full_time):
-        if t in OD:
-            od = OD[t]
-            inflow[t_idx] = od.sum(axis=0)
-            outflow[t_idx] = od.sum(axis=1)
-
-    return inflow, outflow
+    return inflow_arr, outflow_arr
 
 # ==============================
-# 6️⃣ 共享单车
+# 主流程
 # ==============================
-print("Loading bike data...")
-bike_df = pd.read_csv("bike.csv")
-
-bike_od = build_od(
-    bike_df,
-    "start_lng", "start_lat",
-    "end_lng", "end_lat",
-    "started_at"
-)
-
-
-
-# ==============================
-# 7️⃣ 出租车
-# ==============================
-print("Loading taxi data...")
-taxi_df = pd.read_csv("taxi.csv")
-
-# 清洗
-taxi_df = taxi_df.dropna(subset=[
-    "Pickup Centroid Latitude",
-    "Pickup Centroid Longitude",
-    "Dropoff Centroid Latitude",
-    "Dropoff Centroid Longitude"
-])
-
-taxi_od = build_od(
-    taxi_df,
-    "Pickup Centroid Longitude",
-    "Pickup Centroid Latitude",
-    "Dropoff Centroid Longitude",
-    "Dropoff Centroid Latitude",
-    "Trip Start Timestamp"
-)
-
-full_time = sorted(list(set(bike_od.keys()) | set(taxi_od.keys())))
-
-bike_in, bike_out = od_to_flow_fixed(bike_od, full_time)
-taxi_in, taxi_out = od_to_flow_fixed(taxi_od, full_time)
-# ===== 去极值（log）=====
-bike_in = np.log1p(bike_in)
-bike_out = np.log1p(bike_out)
-taxi_in = np.log1p(taxi_in)
-taxi_out = np.log1p(taxi_out)
-
-# ===== 标准化 =====
-def normalize(x):
-    mean = x.mean()
-    std = x.std() + 1e-6
-    return (x - mean) / std
-
-bike_in = normalize(bike_in)
-bike_out = normalize(bike_out)
-taxi_in = normalize(taxi_in)
-taxi_out = normalize(taxi_out)
-
-np.save("bike_inflow.npy", bike_in)
-np.save("bike_outflow.npy", bike_out)
-print("Bike done:", bike_in.shape)
-
-np.save("taxi_inflow.npy", taxi_in)
-np.save("taxi_outflow.npy", taxi_out)
-print("Taxi done:", taxi_in.shape)
+if __name__ == "__main__":
+    bike_in, bike_out = build_flow_numpy_polars(file_paths["bike"], columns_map["bike"], "bike")
+    taxi_in, taxi_out = build_flow_numpy_polars(file_paths["taxi"], columns_map["taxi"], "taxi")
+    print("🎉 所有 npy 文件生成完成！")

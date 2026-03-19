@@ -7,6 +7,6 @@ data/processed/adj_crime_dynamic_od.npy
 data/processed/bike_*.npy
 data/processed/taxi_*.npy
 data/processed/dynamic_od_flow_1246.npy
-data/processed/OD_data/*
+OD_data/*
 
 # Model checkpoints
