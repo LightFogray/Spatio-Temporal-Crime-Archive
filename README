@@ -283,3 +283,18 @@ Test Hit Rate: 0.31508282476024413
 Test PAI: 3.2771187
 Test Jaccard: 0.17742123108726032
 
+Test RMSE: 0.37055763870810576
+Test MAE: 0.19408771395683289
+Test Hit Rate: 0.3060156931124673
+Test PAI: 3.187076
+Test Jaccard: 0.17157838177013982
+
+Test RMSE: 0.5039264172207396
+Test MAE: 0.2931897044181824
+Test Hit Rate: 0.5178291194420227
+Test PAI: 3.4880233
+Test Jaccard: 0.2151484057644724
+
+ attn_score = torch.matmul(Q_flat, K_flat) / self.scale  # (B*T, N, 3N)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 1.60 GiB. GPU 0 has a total capacity of 31.84 GiB of which 24.49 GiB is free. Of the allocated memory 5.57 GiB is allocated by PyTorch, and 32.54 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)报错
+

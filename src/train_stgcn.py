@@ -174,7 +174,7 @@ class Decoupled_STGCN_ZINB(nn.Module):
         od_gate = torch.sigmoid(od_strength)
         # ====== gating crime graph ======
         # print("OD gate matrix shape:", od_gate_matrix.shape)
-        A_dynamic = A3 * (1 + od_gate)
+        A_dynamic = A3 * (0.5 + od_gate)
         # 归一化（必须）
         A_dynamic = A_dynamic / (A_dynamic.sum(dim=-1, keepdim=True) + 1e-6)
 

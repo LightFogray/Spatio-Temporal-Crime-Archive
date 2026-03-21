@@ -112,7 +112,7 @@ def dynamic_adj_crime_gaussian(window=30, sigma=None):
     # A_crime = np.load("data/processed/adj_crime_dynamic.npy")
     # A = 0.5*A_spatial + 0.3*A_distance + 0.2*A_crime 
     # np.save("data/processed/mixed_graph_adj_matrix.npy", A.astype(np.float32))
-# dynamic_adj_crime_gaussian()
+dynamic_adj_crime_gaussian()
 
 
 # if __name__ == "__main__":

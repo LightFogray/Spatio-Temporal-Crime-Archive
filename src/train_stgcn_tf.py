@@ -26,27 +26,78 @@ class CrimeDataset(Dataset):
 # ----------------------------
 # 图融合自注意力模块
 # ----------------------------
-class GraphFusionAttention(nn.Module):
-    def __init__(self, hidden_dim):
+class MultiHeadAttentionGraphFusion(nn.Module):
+    def __init__(self, hidden_dim, num_heads=4, chunk_size=64):
         super().__init__()
-        self.att = nn.Linear(hidden_dim, 1)
+        assert hidden_dim % num_heads == 0
+
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.head_dim = hidden_dim // num_heads
+        self.chunk_size = chunk_size
+
+        # 先对整个H做投影
+        self.Wq = nn.Linear(hidden_dim, hidden_dim)
+        self.Wk = nn.Linear(hidden_dim, hidden_dim)
+        self.Wv = nn.Linear(hidden_dim, hidden_dim)
+
+        self.scale = self.head_dim ** 0.5
 
     def forward(self, x1, x2, x3):
-        # x: (B,T,N,H)
-        s1 = self.att(x1)
-        s2 = self.att(x2)
-        s3 = self.att(x3)
+        B, T, N, H = x1.shape
 
-        score = torch.cat([s1, s2, s3], dim=-1)  # (B,T,N,3)
-        weight = torch.softmax(score, dim=-1)
+        # === 1. 拼接 KV ===
+        KV = torch.cat([x1, x2, x3], dim=2)  # (B,T,3N,H)
 
-        w1 = weight[..., 0].unsqueeze(-1)
-        w2 = weight[..., 1].unsqueeze(-1)
-        w3 = weight[..., 2].unsqueeze(-1)
+        # === 2. Linear projection（关键：在 split 前）===
+        Q_list = [self.Wq(x1), self.Wq(x2), self.Wq(x3)]
+        K = self.Wk(KV)
+        V = self.Wv(KV)
 
-        out = w1 * x1 + w2 * x2 + w3 * x3
+        # === 3. reshape 多头 ===
+        def split_heads(x):
+            return x.view(B, T, -1, self.num_heads, self.head_dim).transpose(2,3)
+            # (B,T,nh,N,Hh)
+
+        K = split_heads(K)  # (B,T,nh,3N,Hh)
+        V = split_heads(V)
+
+        out_list = []
+
+        for Q in Q_list:
+            Q = split_heads(Q)  # (B,T,nh,N,Hh)
+
+            out_chunks = []
+
+            # === 分块防OOM ===
+            for start in range(0, N, self.chunk_size):
+                end = min(start+self.chunk_size, N)
+
+                Q_chunk = Q[:,:,:,start:end,:]  # (B,T,nh,Nc,Hh)
+
+                # flatten
+                Q_flat = Q_chunk.reshape(B*T*self.num_heads, end-start, self.head_dim)
+                K_flat = K.reshape(B*T*self.num_heads, 3*N, self.head_dim)
+                V_flat = V.reshape(B*T*self.num_heads, 3*N, self.head_dim)
+
+                attn = torch.matmul(Q_flat, K_flat.transpose(1,2)) / self.scale
+                attn = torch.softmax(attn, dim=-1)
+
+                out = torch.matmul(attn, V_flat)
+                out = out.reshape(B, T, self.num_heads, end-start, self.head_dim)
+
+                out_chunks.append(out)
+
+            out = torch.cat(out_chunks, dim=3)  # 拼回N
+            out_list.append(out)
+
+        # === 4. 融合三个Query ===
+        out = sum(out_list) / 3  # (B,T,nh,N,Hh)
+
+        # === 5. 合并head ===
+        out = out.transpose(2,3).reshape(B, T, N, H)
+
         return out
-
 # ----------------------------
 # STGCN 块
 # ----------------------------
@@ -101,7 +152,7 @@ class TemporalAttention(nn.Module):
 # Decoupled_HG-STGCN 模型
 # ----------------------------
 class Decoupled_STGCN_ZINB(nn.Module):
-    def __init__(self, in_dim, static_idx, hidden_dim=64):
+    def __init__(self, in_dim, static_idx, hidden_dim=64, num_heads=4, chunk_size=64):
         super().__init__()
         # gate fusion 
         self.fusion_gate = nn.Sequential(
@@ -124,7 +175,7 @@ class Decoupled_STGCN_ZINB(nn.Module):
         self.dynamic_stgcn = STGCNBlock(dynamic_in_dim, hidden_dim)
         
         # --- 图融合与注意力 ---
-        self.graph_fusion = GraphFusionAttention(hidden_dim)
+        self.graph_fusion = MultiHeadAttentionGraphFusion(hidden_dim, num_heads=num_heads, chunk_size=chunk_size)
         self.temporal_att = TemporalAttention(hidden_dim)
         
         # --- ZINB 输出层 ---
@@ -169,36 +220,29 @@ class Decoupled_STGCN_ZINB(nn.Module):
         
         # === 机制建模 ===
         # ====== OD gating ======
-        od_strength = torch.mean(OD, dim=-1, keepdim=True)   # (B,N,1)
-        # 控制范围（关键）
+        # 3. 动态支路
+        od_strength = torch.mean(OD, dim=-1, keepdim=True)
         od_gate = torch.sigmoid(od_strength)
-        # ====== gating crime graph ======
-        # print("OD gate matrix shape:", od_gate_matrix.shape)
-        A_dynamic = A3 * (1 + od_gate)
-        # 归一化（必须）
+        A_dynamic = A3 * (0.5 + od_gate)
         A_dynamic = A_dynamic / (A_dynamic.sum(dim=-1, keepdim=True) + 1e-6)
 
         # STGCN
-        # h_dynamic = self.dynamic_stgcn(x_dynamic, A_dynamic)
-        # h_dynamic = self.temporal_att(h_dynamic)
-        
         h_dyn1 = self.dynamic_stgcn(x_dynamic, A1)
         h_dyn2 = self.dynamic_stgcn(x_dynamic, A2)
         h_dyn3 = self.dynamic_stgcn(x_dynamic, A_dynamic)
         h_dynamic = self.graph_fusion(h_dyn1, h_dyn2, h_dyn3)
-        h_dynamic = self.temporal_att(h_dynamic)      # (B, N, H)
-        
-        # 4. 特征拼接 (解耦融合)
+        h_dynamic = self.temporal_att(h_dynamic)
+
+        # 4. 特征融合
         h_cat = torch.cat([h_static, h_dynamic], dim=-1)
-        g = self.fusion_gate(h_cat)   # (B,N,H)
+        g = self.fusion_gate(h_cat)
         h_final = g * h_static + (1 - g) * h_dynamic
-        h_final = h_static + h_final # 残差连接，增强静态特征的稳定性 保证 静态特征信息不会被 Gate 完全压制
-        
+        h_final = h_static + h_final  # 残差增强静态特征
+
         # 5. ZINB 参数预测
         pi = self.fc_pi(h_final).squeeze(-1)
         mu = self.fc_mu(h_final).squeeze(-1)
         theta = self.fc_theta(h_final).squeeze(-1)
-        # 加入解耦约束
         return pi, mu, theta, h_static, h_dynamic
 
 
@@ -295,6 +339,11 @@ A_hg = torch.tensor(A_hg).float().to(device)
 # 5.初始化模型
 # -----------------------------
 static_idx = 24
+import inspect
+
+print("当前文件路径:", __file__)
+print("类定义位置:", inspect.getfile(MultiHeadAttentionGraphFusion))
+print("构造函数参数:", MultiHeadAttentionGraphFusion.__init__.__code__.co_varnames)
 model = Decoupled_STGCN_ZINB(X.shape[2], static_idx).to(device)
 
 
