@@ -703,7 +703,6 @@ class SpatioTemporalTransformer(nn.Module):
             near_repeat_effect = self.near_repeat_module(
                 crime_history=crime_history,
                 dist_matrix=dist,
-                time_steps=T,
                 OD_flow=OD
             )  # (B, N)
 

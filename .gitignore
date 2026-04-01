@@ -1,6 +1,7 @@
 # Data files
 data/raw/*.geojson
 data/raw/*.csv
+data/raw/*.tif
 data/processed/adj_crime_dynamic_gaussian.npy
 data/processed/X.npy
 data/processed/adj_crime_dynamic_od.npy
