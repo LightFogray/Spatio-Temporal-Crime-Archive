@@ -7,18 +7,19 @@ files = [
 # "green_ratio.npy",
 # "nightlight_features.npy",
 # "weather_features.npy",
-"crime_grid_timeseries.npy",
+# "crime_grid_timeseries.npy",
 # "X.npy",
 # "Y.npy",
 # "adj_adaptive.npy",
 # "adj_distance.npy",
-"adj_crime_dynamic_gaussian.npy",
-"bike_inflow_1246.npy",
-"bike_outflow_1246.npy",
-"taxi_inflow_1246.npy",
-"taxi_outflow_1246.npy",
-"dynamic_od_flow_1246.npy",
-"adj_crime_dynamic_od.npy"
+# "adj_crime_dynamic_gaussian.npy",
+# "bike_inflow_1246.npy",
+# "bike_outflow_1246.npy",
+# "taxi_inflow_1246.npy",
+# "taxi_outflow_1246.npy",
+# "dynamic_od_flow_1246.npy",
+# "adj_crime_dynamic_od.npy",
+"semantic_embedding.npy"
 ]
 
 for f in files:

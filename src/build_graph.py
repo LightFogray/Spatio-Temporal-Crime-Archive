@@ -21,7 +21,7 @@ def build_adj_adaptive():
     landuse = np.load("data/processed/landuse_features.npy")
     night = np.load("data/processed/nightlight_features.npy")
     road = np.load("data/processed/road_density.npy")
-    green = np.load("data/processed/green_ratio.npy")
+    green = np.load("data/processed/green_features.npy")
     green_squared = green ** 2  # 二次项 体现双向作用
     feature = np.hstack([
         poi,

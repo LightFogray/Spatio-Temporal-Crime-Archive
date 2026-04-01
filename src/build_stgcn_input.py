@@ -1,11 +1,12 @@
 import numpy as np
+from sklearn.preprocessing import StandardScaler
 # -------------------------
 # 读取空间特征
 # -------------------------
 poi = np.load("data/processed/poi_features.npy")
 road = np.load("data/processed/road_density.npy")
 landuse = np.load("data/processed/landuse_features.npy")
-green = np.load("data/processed/green_ratio.npy")
+green = np.load("data/processed/green_features.npy")
 nightlight = np.load("data/processed/nightlight_features.npy")
 # -------------------------
 # 拼接空间特征
@@ -17,6 +18,8 @@ spatial_features = np.hstack([
     green,
     nightlight
 ])
+scaler = StandardScaler()
+spatial_features = scaler.fit_transform(spatial_features) # 标准化空间特征
 print("spatial_features:", spatial_features.shape)
 
 # (N,F)

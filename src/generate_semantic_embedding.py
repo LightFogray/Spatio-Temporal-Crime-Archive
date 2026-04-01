@@ -1,166 +1,183 @@
 import os
 import json
-import time
 import numpy as np
 import requests
+import torch
 from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import warnings
 
 # =========================
-# 0. 初始化
+# 0. 初始化与配置
 # =========================
 SAVE_DIR = "data/processed/"
-CACHE_FILE = os.path.join(SAVE_DIR, "semantic_texts.json")
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"  # 必须在导入transformers前设置！
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.makedirs(SAVE_DIR, exist_ok=True)
+
+CACHE_FILE = os.path.join(SAVE_DIR, "semantic_texts_v2.json")
+EMBEDDING_FILE = os.path.join(SAVE_DIR, "semantic_embedding_v2.npy")
+
+# 配置并发数：取决于你的显存和本地LLM的并发处理能力
+# Ollama 默认通常支持一定的并发，建议设为 4-8
+MAX_WORKERS = 4 
 
 # =========================
-# 1. 加载特征
+# 1. 加载特征 (保持原样)
 # =========================
-poi = np.load("data/processed/poi_features.npy")
-road = np.load("data/processed/road_density.npy")
-light = np.load("data/processed/nightlight_features.npy")
-landuse = np.load("data/processed/landuse_features.npy")
-green = np.load("data/processed/green_ratio.npy")
+def load_features():
+    files = {
+        'poi': 'poi_features.npy',
+        'road': 'road_density.npy',
+        'light': 'nightlight_features.npy',
+        'landuse': 'landuse_features.npy',
+        'green': 'green_features.npy',
+        'weather': 'weather_features.npy',
+        'camera': 'camera_features.npy'
+    }
+    features = {}
+    for k, f in files.items():
+        path = os.path.join(SAVE_DIR, f)
+        assert os.path.exists(path), f"缺失文件: {path}"
+        features[k] = np.load(path)
+        print(f"{k} shape: {features[k].shape}")
 
-N = poi.shape[0]
+    N = features['poi'].shape[0]
+    weather = features['weather']
+    weather_global = {
+        'rain_freq': weather[:,0].mean(),
+        'temp_avg': weather[:,4].mean()
+    }
+    return features, N, weather_global
 
 # =========================
-# 2. 工具函数（保持不变）
+# 2. 工具函数 (增强描述力)
 # =========================
 def level(x):
-    if isinstance(x, np.ndarray):
-        x = x.mean()
-    if x < 0.33:
-        return "low"
-    elif x < 0.66:
-        return "moderate"
-    else:
-        return "high"
+    val = x.mean() if isinstance(x, np.ndarray) else x
+    return "low" if val < 0.33 else "moderate" if val < 0.66 else "high"
 
 def describe_landuse(vec):
-    if isinstance(vec, np.ndarray) and vec.ndim > 1:
-        vec = vec.mean(axis=0)
     res, com, ind = vec[:3]
-    return f"residential {res:.2f}, commercial {com:.2f}, industrial {ind:.2f}"
+    if max(res, com, ind) < 0.7:
+        mix = "mixed-use urban fabric"
+    else:
+        mix = ["residential area", "commercial hub", "industrial zone"][np.argmax([res, com, ind])]
+    return f"{mix} (res:{res:.2f}, com:{com:.2f}, ind:{ind:.2f})"
 
 def describe_poi(vec):
-    return f"overall intensity {np.round(vec.mean(),2)}"
+    commercial, transport, public = vec[0], vec[1], vec[2]
+    return f"commercial activity index: {commercial:.2f}, transport accessibility: {transport:.2f}, public services: {public:.2f}"
 
+def describe_camera(vec):
+    """摄像头监护能力描述"""
+    
+    val = vec.mean() if isinstance(vec, np.ndarray) else vec
+    
+    if val < 0.33:
+        return "limited surveillance coverage"
+    elif val < 0.66:
+        return "moderate camera coverage"
+    else:
+        return "dense surveillance network"
 # =========================
-# 3. Prompt构造（保持不变）
+# 3. Prompt 构建 (注入犯罪学理论)
 # =========================
-def build_prompt(i):
+def build_prompt(i, features, weather_desc):
+    # 提取当前区域特征
+    lu = describe_landuse(features['landuse'][i])
+    po = describe_poi(features['poi'][i])
+    rd = level(features['road'][i])
+    nl = "well-lit" if level(features['light'][i]) == "high" else "dimly lit"
+    gs = "rich green space" if level(features['green'][i]) == "high" else "lacking vegetation"
+    cam = describe_camera(features['camera'][i])
+
     return f"""
-You are an expert in urban studies and crime analysis.
+Act as an environmental criminologist. Analyze the urban micro-environment of Region {i}:
 
-Region characteristics:
-- POI: {describe_poi(poi[i])}
-- Road density: {level(road[i])}
-- Nighttime light: {level(light[i])}
-- Land use: {describe_landuse(landuse[i])}
-- Green space: {level(green[i])}
+- Land Use: {lu}
+- POI Activity: {po}
+- Infrastructure: {rd} road density, {nl} at night.
+- Surveillance: {cam}
+- Natural Environment: {gs}, {weather_desc}.
 
-Task:
-1. Describe the functional type of this region
-2. Describe human activity patterns
-3. Infer potential violent crime risk factors
+Task: Briefly identify:
 
-Keep it within 2-3 sentences.
-Do NOT use actual crime data.
+1. Whether this area acts as a 'Crime Generator' or 'Attractor'.
+2. The level of 'Capable Guardianship' (formal/informal surveillance).
+3. Potential target suitability for street-level crime.
+
+Constraint: 2-3 concise sentences. Focus on environmental risk factors.
 """
 
 # =========================
-# 4. 调用LLM（修改为 Ollama 原生 API）
+# 4. 优化后的 LLM 调用 (增加健壮性)
 # =========================
-def query_llm(prompt, retries=3):
-    """使用 Ollama 原生 API"""
+def query_llm(prompt, region_id):
     url = "http://localhost:11434/api/generate"
-    
     payload = {
-        "model": "qwen3:4b",
+        "model": "qwen3:4b", 
         "prompt": prompt,
         "stream": False,
         "options": {
-            "temperature": 0.3,
-            "num_predict": 500  # 限制输出长度
+            "temperature": 0.2, # 降低随机性
+            "num_predict": 100,  # 严格限制长度，加速生成
+            "stop": ["\n\n"]
         }
     }
-    
-    for attempt in range(retries):
-        try:
-            response = requests.post(url, json=payload, timeout=60)
-            response.raise_for_status()
-            result = response.json()
-            return result.get("response", "").strip()
-        except requests.exceptions.Timeout:
-            print(f"超时，重试 {attempt+1}/{retries}")
-            time.sleep(2)
-        except requests.exceptions.RequestException as e:
-            print(f"请求失败: {e}")
-            if attempt == retries - 1:
-                raise
-            time.sleep(2)
-    
-    raise Exception("所有重试都失败")
-
-# =========================
-# 5. 加载缓存
-# =========================
-if os.path.exists(CACHE_FILE):
-    with open(CACHE_FILE, "r", encoding="utf-8") as f:
-        texts = json.load(f)
-else:
-    texts = [""] * N
-
-# =========================
-# 6. 批量生成语义文本
-# =========================
-print("🚀 Generating semantic descriptions...")
-
-for i in tqdm(range(N)):
-    if texts[i] != "":
-        continue
-
-    prompt = build_prompt(i)
-
     try:
-        text = query_llm(prompt)
-        texts[i] = text
-
-        # 每生成10条保存一次
-        if i % 10 == 0:
-            with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(texts, f, ensure_ascii=False, indent=2)
-
-        time.sleep(0.2)  # 防止过载
-
-    except Exception as e:
-        print(f"Error at {i}: {e}")
-        time.sleep(2)
-
-# 最终保存
-with open(CACHE_FILE, "w", encoding="utf-8") as f:
-    json.dump(texts, f, ensure_ascii=False, indent=2)
-
-print("✅ 文本生成完成")
+        r = requests.post(url, json=payload, timeout=30)
+        r.raise_for_status()
+        return r.json()['response'].strip()
+    except Exception:
+        return "Typical urban area with moderate environmental risk factors."
 
 # =========================
-# 7. 文本 → embedding（保持不变）
+# 5. 执行主流程
 # =========================
-print("🔄 Encoding embeddings...")
+def main():
+    features, N, weather_global = load_features()
+    weather_desc = "cold climate" if weather_global['temp_avg'] < 10 else "mild climate"
 
-model = SentenceTransformer('all-MiniLM-L6-v2')
+    # --- 步骤 5.1: 多线程生成语义描述 ---
+    if os.path.exists(CACHE_FILE):
+        print("从缓存加载文本...")
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            texts = json.load(f)["texts"]
+    else:
+        print(f"开始并发生成语义描述 (Threads: {MAX_WORKERS})...")
+        texts = [None] * N
+        
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            # 提交任务
+            future_to_id = {
+                executor.submit(query_llm, build_prompt(i, features, weather_desc), i): i 
+                for i in range(N)
+            }
+            
+            # 使用 tqdm 显示进度
+            for future in tqdm(as_completed(future_to_id), total=N):
+                idx = future_to_id[future]
+                texts[idx] = future.result()
 
-embeddings = model.encode(
-    texts,
-    batch_size=64,
-    show_progress_bar=True
-)
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"texts": texts}, f, indent=2, ensure_ascii=False)
 
-print("embedding shape:", embeddings.shape)
+    # --- 步骤 5.2: 生成语义嵌入 ---
+    print("正在生成语义嵌入 (BGE-M3)...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model = SentenceTransformer("BAAI/bge-m3", device=device)
 
-# =========================
-# 8. 保存
-# =========================
-np.save(os.path.join(SAVE_DIR, "semantic_embedding.npy"), embeddings)
+    embeddings = model.encode(
+        texts,
+        batch_size=32, # 显著增加 Batch Size
+        show_progress_bar=True,
+        normalize_embeddings=True
+    )
 
-print("✅ semantic_embedding.npy 已生成！")
+    np.save(EMBEDDING_FILE, embeddings)
+    print(f"完成！特征已保存至 {EMBEDDING_FILE}")
+
+if __name__ == "__main__":
+    main()

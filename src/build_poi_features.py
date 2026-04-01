@@ -382,10 +382,84 @@ def weather_features():
         weather_features.astype(np.float32)
     )
 
-build_nightlight_feature()
+# 从卫星遥感提取的绿地覆盖特征
+def build_green_remote_features():
+
+    df = pd.read_csv("data/raw/Chicago_NDVI.csv")
+    features = df[["NDVI_mean","NDVI_std"]].values
+    np.save(
+        "data/processed/green_remote_features.npy",
+        features.astype(np.float32)
+    )
+
+def fuse_green_features():
+
+    print("Fusing green features...")
+
+    # OSM绿地
+    osm_green = np.load(
+        "data/processed/green_ratio.npy"
+    )
+
+    # 遥感绿地
+    remote_green = np.load(
+        "data/processed/green_remote_features.npy"
+    )
+
+    # 拼接
+    green_features = np.hstack([
+        osm_green,
+        remote_green
+    ])
+
+    print("Final green feature shape:", green_features.shape)
+
+    np.save(
+        "data/processed/green_features.npy",
+        green_features.astype(np.float32)
+    )
+
+    print("Final green features saved!")
+
+def build_camera_features():
+
+    grid = gpd.read_file("data/processed/chicago_grid.shp")
+    camera = gpd.read_file("data/raw/cameras.geojson")
+
+    camera = camera.to_crs(grid.crs)
+
+    density = []
+    distance = []
+
+    for idx, cell in grid.iterrows():
+
+        inside = camera.within(cell.geometry)
+
+        density.append(inside.sum())
+
+        nearest = camera.distance(cell.geometry.centroid).min()
+
+        distance.append(nearest)
+
+    density = np.array(density)
+    distance = np.array(distance)
+
+    density = density / density.max()
+    distance = distance / distance.max()
+
+    features = np.stack([density, distance], axis=1)
+    np.save("data/processed/camera_features.npy", features.astype(np.float32))
+
+    print("摄像头特征生成完成")
+    print("shape:", features.shape)
+
+# build_nightlight_feature()
 # build_road_features()
-roadshp2npy()
-build_landuse_features()
-build_poi_features()
-build_green_features()
-weather_features()
+# roadshp2npy()
+# build_landuse_features()
+# build_poi_features()
+# build_green_features()
+# weather_features()
+# build_green_remote_features()
+# fuse_green_features()
+# build_camera_features()
