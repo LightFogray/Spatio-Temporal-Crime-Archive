@@ -7,6 +7,11 @@ from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import warnings
+import argparse
+
+# RAG增强模块
+from rag_semantic_generator import RAGSemanticGenerator, generate_rag_semantic_embeddings
+from env_criminology_kb import EnvironmentalCriminologyKB
 
 # =========================
 # 0. 初始化与配置
@@ -17,11 +22,17 @@ os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
 os.makedirs(SAVE_DIR, exist_ok=True)
 
 CACHE_FILE = os.path.join(SAVE_DIR, "semantic_texts_v2.json")
+CACHE_FILE_RAG = os.path.join(SAVE_DIR, "semantic_texts_rag.json")
 EMBEDDING_FILE = os.path.join(SAVE_DIR, "semantic_embedding_v2.npy")
+EMBEDDING_FILE_RAG = os.path.join(SAVE_DIR, "semantic_embedding_rag.npy")
 
 # 配置并发数：取决于你的显存和本地LLM的并发处理能力
 # Ollama 默认通常支持一定的并发，建议设为 4-8
-MAX_WORKERS = 4 
+MAX_WORKERS = 4
+
+# RAG配置
+USE_RAG = True  # 默认启用RAG
+RAG_WEIGHT = 0.7 
 
 # =========================
 # 1. 加载特征 (保持原样)
@@ -134,50 +145,111 @@ def query_llm(prompt, region_id):
         return "Typical urban area with moderate environmental risk factors."
 
 # =========================
-# 5. 执行主流程
+# 5. RAG增强模式生成
+# =========================
+def generate_with_rag(features, N, weather_global):
+    """
+    使用RAG增强生成语义描述
+    """
+    print("=" * 60)
+    print("使用RAG增强模式生成语义描述")
+    print("=" * 60)
+
+    # 构建特征字典
+    features_dict = {}
+    for i in range(N):
+        features_dict[i] = {
+            'poi_commercial': features['poi'][i][0] if len(features['poi'][i]) > 0 else 0,
+            'poi_transport': features['poi'][i][1] if len(features['poi'][i]) > 1 else 0,
+            'poi_public': features['poi'][i][2] if len(features['poi'][i]) > 2 else 0,
+            'road_density': features['road'][i].mean() if isinstance(features['road'][i], np.ndarray) else features['road'][i],
+            'nightlight': features['light'][i].mean() if isinstance(features['light'][i], np.ndarray) else features['light'][i],
+            'camera_coverage': features['camera'][i].mean() if isinstance(features['camera'][i], np.ndarray) else features['camera'][i],
+            'landuse_mix': np.std(features['landuse'][i][:3]) if len(features['landuse'][i]) >= 3 else 0,
+            'green_ratio': features['green'][i].mean() if isinstance(features['green'][i], np.ndarray) else features['green'][i]
+        }
+
+    # 使用RAG生成
+    texts = generate_rag_semantic_embeddings(
+        features_dict=features_dict,
+        weather_global=weather_global,
+        output_path=CACHE_FILE_RAG,
+        use_rag=True
+    )
+
+    return texts
+
+# =========================
+# 6. 执行主流程
 # =========================
 def main():
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='Generate semantic embeddings for crime prediction')
+    parser.add_argument('--mode', type=str, default='rag', choices=['rag', 'basic'],
+                       help='Generation mode: rag (with knowledge base) or basic (original)')
+    parser.add_argument('--force', action='store_true',
+                       help='Force regeneration even if cache exists')
+    args = parser.parse_args()
+
+    global USE_RAG
+    USE_RAG = (args.mode == 'rag')
+
     features, N, weather_global = load_features()
     weather_desc = "cold climate" if weather_global['temp_avg'] < 10 else "mild climate"
 
-    # --- 步骤 5.1: 多线程生成语义描述 ---
-    if os.path.exists(CACHE_FILE):
-        print("从缓存加载文本...")
-        with open(CACHE_FILE, "r", encoding="utf-8") as f:
-            texts = json.load(f)["texts"]
+    # 选择生成模式
+    if USE_RAG:
+        # RAG增强模式
+        cache_file = CACHE_FILE_RAG
+        embedding_file = EMBEDDING_FILE_RAG
+
+        if os.path.exists(cache_file) and not args.force:
+            print(f"从RAG缓存加载文本: {cache_file}")
+            with open(cache_file, "r", encoding="utf-8") as f:
+                texts = json.load(f)["texts"]
+        else:
+            texts = generate_with_rag(features, N, weather_global)
     else:
-        print(f"开始并发生成语义描述 (Threads: {MAX_WORKERS})...")
-        texts = [None] * N
-        
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # 提交任务
-            future_to_id = {
-                executor.submit(query_llm, build_prompt(i, features, weather_desc), i): i 
-                for i in range(N)
-            }
-            
-            # 使用 tqdm 显示进度
-            for future in tqdm(as_completed(future_to_id), total=N):
-                idx = future_to_id[future]
-                texts[idx] = future.result()
+        # 基础模式（原有逻辑）
+        cache_file = CACHE_FILE
+        embedding_file = EMBEDDING_FILE
 
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump({"texts": texts}, f, indent=2, ensure_ascii=False)
+        if os.path.exists(cache_file) and not args.force:
+            print(f"从缓存加载文本: {cache_file}")
+            with open(cache_file, "r", encoding="utf-8") as f:
+                texts = json.load(f)["texts"]
+        else:
+            print(f"开始并发生成语义描述 (Threads: {MAX_WORKERS})...")
+            texts = [None] * N
 
-    # --- 步骤 5.2: 生成语义嵌入 ---
-    print("正在生成语义嵌入 (BGE-M3)...")
+            with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                future_to_id = {
+                    executor.submit(query_llm, build_prompt(i, features, weather_desc), i): i
+                    for i in range(N)
+                }
+
+                for future in tqdm(as_completed(future_to_id), total=N):
+                    idx = future_to_id[future]
+                    texts[idx] = future.result()
+
+            with open(cache_file, "w", encoding="utf-8") as f:
+                json.dump({"texts": texts}, f, indent=2, ensure_ascii=False)
+
+    # 生成语义嵌入
+    print("\n正在生成语义嵌入 (BGE-M3)...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = SentenceTransformer("BAAI/bge-m3", device=device)
 
     embeddings = model.encode(
         texts,
-        batch_size=32, # 显著增加 Batch Size
+        batch_size=32,
         show_progress_bar=True,
         normalize_embeddings=True
     )
 
-    np.save(EMBEDDING_FILE, embeddings)
-    print(f"完成！特征已保存至 {EMBEDDING_FILE}")
+    np.save(embedding_file, embeddings)
+    print(f"完成！特征已保存至 {embedding_file}")
+    print(f"生成模式: {'RAG增强' if USE_RAG else '基础模式'}")
 
 if __name__ == "__main__":
     main()
