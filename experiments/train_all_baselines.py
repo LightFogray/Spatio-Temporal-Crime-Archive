@@ -21,11 +21,11 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from src.baselines import (
     HistoricalAverage, RandomForestPredictor,
     ConvLSTM, STGCN, DCRNN, GraphWaveNet,
-    calculate_metrics
+    calculate_advanced_metrics
 )
 from src.train_stgcn_trans import (
     SpatioTemporalTransformer, CrimeDataset,
-    zinb_loss, train_model, test_model
+    zinb_loss, train_model, test_model, calculate_advanced_metrics
 )
 from torch.utils.data import DataLoader
 
@@ -303,7 +303,7 @@ class Trainer:
         y_pred = np.vstack(preds)
         y_true = np.vstack(targets)
 
-        return calculate_metrics(y_true, y_pred, k_percent=self.config.K_PERCENT)
+        return calculate_advanced_metrics(y_true, y_pred, k_percent=self.config.K_PERCENT)
 
 
 # ================================
@@ -367,14 +367,14 @@ def run_single_experiment(seed: int, all_data: dict) -> Dict:
     ha = HistoricalAverage(window_size=7)
     ha.fit(splits['X_train'], splits['Y_train'])
     _, mu, _ = ha.predict(splits['X_test'])
-    results['HA'] = calculate_metrics(splits['Y_test'], mu, Config.K_PERCENT)
+    results['HA'] = calculate_advanced_metrics(splits['Y_test'], mu, Config.K_PERCENT)
 
     # 2. Random Forest
     print("\n[2/8] Random Forest")
     rf = RandomForestPredictor(n_estimators=200)
     rf.fit(splits['X_train'], splits['Y_train'])
     _, mu, _ = rf.predict(splits['X_test'])
-    results['RF'] = calculate_metrics(splits['Y_test'], mu, Config.K_PERCENT)
+    results['RF'] = calculate_advanced_metrics(splits['Y_test'], mu, Config.K_PERCENT)
 
     # 3. ConvLSTM
     print("\n[3/8] ConvLSTM")
@@ -425,12 +425,12 @@ def run_single_experiment(seed: int, all_data: dict) -> Dict:
     stt_no_sem = SpatioTemporalTransformer(
         static_dim=static_dim,
         dynamic_dim=dynamic_dim,
-        semantic_dim=0,
+        semantic_dim=0,  # 显式设为0表示无语义
         hidden_dim=Config.HIDDEN_DIM,
         num_heads=Config.NUM_HEADS,
         dropout=Config.DROPOUT,
         num_nodes=N,
-        use_semantic_gate=False,
+        use_semantic_gate=False,  # 关闭自适应融合
         use_near_repeat=True
     ).to(Config.DEVICE)
     trainer = Trainer('STT_NoSemantic', stt_no_sem, Config())
@@ -440,8 +440,8 @@ def run_single_experiment(seed: int, all_data: dict) -> Dict:
     results['STT_NoSemantic'] = trainer.evaluate(test_loader, A_spatial, A_distance,
                                                   A_hypergraph, None)
 
-    # 8. Our Full Model
-    print("\n[8/8] Our Full Model (ST-Transformer + LLM Semantic)")
+    # 8. Our Full Model (ACR-ST)
+    print("\n[8/8] Our Full Model (ACR-ST with LLM Semantic)")
     our_model = SpatioTemporalTransformer(
         static_dim=static_dim,
         dynamic_dim=dynamic_dim,
@@ -450,14 +450,14 @@ def run_single_experiment(seed: int, all_data: dict) -> Dict:
         num_heads=Config.NUM_HEADS,
         dropout=Config.DROPOUT,
         num_nodes=N,
-        use_semantic_gate=True,
+        use_semantic_gate=True,  # 启用自适应专家融合
         use_near_repeat=True
     ).to(Config.DEVICE)
-    trainer = Trainer('Ours', our_model, Config())
+    trainer = Trainer('ACR-ST', our_model, Config())
     trainer.train_deeplearning(train_loader, val_loader,
                                A_spatial, A_distance, A_hypergraph, semantic_embed)
-    our_model.load_state_dict(torch.load(f"{Config.CHECKPOINT_DIR}/Ours_best.pt"))
-    results['Ours'] = trainer.evaluate(test_loader, A_spatial, A_distance,
+    our_model.load_state_dict(torch.load(f"{Config.CHECKPOINT_DIR}/ACR-ST_best.pt"))
+    results['ACR-ST'] = trainer.evaluate(test_loader, A_spatial, A_distance,
                                        A_hypergraph, semantic_embed)
 
     return results

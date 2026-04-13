@@ -1,0 +1,198 @@
+{
+  "version": "1.0",
+  "principles": [
+    "Environment-only: No demographic references",
+    "CPTED-based: Focus on design and opportunity",
+    "Bias-audited: All entries reviewed for neutrality"
+  ],
+  "entries": [
+    {
+      "entry_id": "commercial_high_density",
+      "place_type": "high_density_commercial",
+      "environmental_features": {
+        "poi_commercial": 0.9,
+        "poi_transport": 0.7,
+        "road_density": 0.8,
+        "nightlight": 0.8,
+        "camera_coverage": 0.6,
+        "landuse_mix": 0.9,
+        "green_ratio": 0.2
+      },
+      "risk_mechanism": "高商业密度产生犯罪生成器效应：1) 大量潜在目标聚集（财物、车辆）；2) 人流混杂降低匿名性成本；3) 营业时间延长增加暴露窗口。风险由环境机会结构驱动，非特定人群。",
+      "guardianship_strategies": [
+        "增加CCTV覆盖至80%以上",
+        "商户联防机制（共享监控资源）",
+        "优化夜间照明至lux 50+",
+        "设计通透橱窗增加自然监护"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "entertainment_nighttime",
+      "place_type": "nighttime_entertainment",
+      "environmental_features": {
+        "poi_commercial": 0.8,
+        "nightlight": 0.4,
+        "road_density": 0.6,
+        "camera_coverage": 0.3,
+        "landuse_mix": 0.5,
+        "green_ratio": 0.1
+      },
+      "risk_mechanism": "夜间娱乐场所形成犯罪吸引器：1) 酒精消费增加冲突概率（环境氛围因素）；2) 深夜时段正式监护（警力、保安）减少；3) 闭店时段人流骤减形成监护真空。风险由时间-环境交互产生。",
+      "guardianship_strategies": [
+        "闭店时段增配安保人员",
+        "设置夜间出租车接驳点（减少街道等待）",
+        "安装智能照明随人流调节",
+        "与周边商户建立夜间联防"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "transit_hub",
+      "place_type": "transit_hub",
+      "environmental_features": {
+        "poi_transport": 0.95,
+        "poi_commercial": 0.5,
+        "road_density": 0.9,
+        "nightlight": 0.7,
+        "camera_coverage": 0.5,
+        "landuse_mix": 0.6,
+        "green_ratio": 0.1
+      },
+      "risk_mechanism": "交通枢纽产生流动性风险：1) 人流快速更替降低社会凝聚力（匿名性）；2) 多模式换乘创造复杂空间（监控盲区）；3) 地下/半地下空间自然监护受限。风险由空间-人流特性交互产生。",
+      "guardianship_strategies": [
+        "消除监控盲区（全景摄像头覆盖）",
+        "改善自然视线（减少视线遮挡结构）",
+        "增加工作人员可见性（制服、标识）",
+        "设置紧急呼叫点"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "residential_pure",
+      "place_type": "pure_residential",
+      "environmental_features": {
+        "poi_commercial": 0.1,
+        "poi_transport": 0.3,
+        "road_density": 0.4,
+        "nightlight": 0.5,
+        "camera_coverage": 0.2,
+        "landuse_mix": 0.2,
+        "green_ratio": 0.6
+      },
+      "risk_mechanism": "纯住宅区风险特征：1) 日间人口外流导致监护真空（通勤效应）；2) 绿化过高可能遮挡视线（自然监护 vs 隐私的平衡）；3) 道路密度低导致巡逻覆盖不足。风险由人口时间分布与空间设计交互产生。",
+      "guardianship_strategies": [
+        "推广社区守望计划（增强非正式监护）",
+        "修剪过高植被（改善视线通透性）",
+        "安装 motion-sensor 照明",
+        "建立邻里安全群组"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "residential_mixed",
+      "place_type": "mixed_use_residential",
+      "environmental_features": {
+        "poi_commercial": 0.5,
+        "poi_transport": 0.5,
+        "road_density": 0.6,
+        "nightlight": 0.6,
+        "camera_coverage": 0.4,
+        "landuse_mix": 0.7,
+        "green_ratio": 0.4
+      },
+      "risk_mechanism": "混合用途住宅区：1) 功能混合增加全天候人流（降低真空时段）；2) 商业-住宅边界可能存在监护责任模糊；3) 过境人流增加目标暴露。风险由功能混合的空间边界效应产生。",
+      "guardianship_strategies": [
+        "明确商业-住宅边界管理责任",
+        "增加边界区域照明",
+        "设计通透的底层商业（自然监护）",
+        "建立商户-居民安全联盟"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "industrial_zone",
+      "place_type": "industrial_zone",
+      "environmental_features": {
+        "poi_commercial": 0.1,
+        "poi_transport": 0.6,
+        "road_density": 0.5,
+        "nightlight": 0.3,
+        "camera_coverage": 0.3,
+        "landuse_mix": 0.1,
+        "green_ratio": 0.2
+      },
+      "risk_mechanism": "工业区风险特征：1) 夜间/周末完全真空（无人口活动）；2) 高价值设备/材料（目标丰富）；3) 围墙封闭阻碍自然监护。风险由时间真空与目标暴露产生。",
+      "guardianship_strategies": [
+        " perimeter 围栏+入侵检测",
+        "夜间照明全覆盖（lux 30+）",
+        "CCTV 24小时监控",
+        "雇佣专业安保巡逻"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "park_open_space",
+      "place_type": "park_open_space",
+      "environmental_features": {
+        "poi_commercial": 0.1,
+        "poi_transport": 0.2,
+        "road_density": 0.3,
+        "nightlight": 0.2,
+        "camera_coverage": 0.1,
+        "landuse_mix": 0.1,
+        "green_ratio": 0.9
+      },
+      "risk_mechanism": "公园/开放空间风险：1) 设计导向美学而非安全（视线遮挡）；2) 入口/出口过多导致访问控制困难；3) 植被提供隐蔽（双面性：既是 amenity 也是风险）。风险由设计-功能张力产生。",
+      "guardianship_strategies": [
+        "设计活动节点（吸引合法使用）",
+        "修剪植被至视线通透（CPTED原则）",
+        "增加活动区域照明",
+        "设置清晰的空间分区"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "school_zone",
+      "place_type": "school_zone",
+      "environmental_features": {
+        "poi_public": 0.9,
+        "poi_commercial": 0.3,
+        "road_density": 0.5,
+        "nightlight": 0.4,
+        "camera_coverage": 0.4,
+        "landuse_mix": 0.3,
+        "green_ratio": 0.5
+      },
+      "risk_mechanism": "教育机构周边：1) 上下学时段人流骤增（目标集中暴露）；2) 放学后迅速真空；3) 校园边界区域可能存在监控盲区。风险由时间集中性与空间边界产生。",
+      "guardianship_strategies": [
+        "上下学时段临时交通管控",
+        "增加边界照明与监控",
+        "设计接送区域避免街道混乱",
+        "与社区警务建立联动"
+      ],
+      "bias_audit_passed": true
+    },
+    {
+      "entry_id": "near_repeat_vulnerable",
+      "place_type": "high_connectivity_area",
+      "environmental_features": {
+        "poi_commercial": 0.6,
+        "poi_transport": 0.7,
+        "road_density": 0.8,
+        "nightlight": 0.5,
+        "camera_coverage": 0.3,
+        "landuse_mix": 0.6,
+        "green_ratio": 0.3
+      },
+      "risk_mechanism": "高连通性区域的近重复风险：1) 犯罪事件后信息通过空间网络传播；2) 道路连通性便利犯罪人移动；3) 监护资源固定，犯罪人可选择最弱点。风险由空间拓扑与犯罪学习产生。",
+      "guardianship_strategies": [
+        "事件后48小时增强巡逻（时间窗口关键）",
+        "在连通路径设置监控",
+        "快速修复破坏（破窗理论）",
+        "向周边区域发出预警"
+      ],
+      "bias_audit_passed": true
+    }
+  ]
+}

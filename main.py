@@ -1,6 +1,6 @@
 from src.download_data import download_chicago_data,download_road_network,download_landuse,download_greenland
 from src.build_grid import build_grid
-from src.build_poi_features import build_poi_features,build_road_features,build_landuse_features,build_green_features
+from build_static_features import build_poi_features,build_road_features,build_landuse_features,build_green_features
 from src.build_graph import build_adj_matrix
 
 

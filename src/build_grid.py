@@ -40,26 +40,40 @@ def build_grid(grid_size=1000):
     print("网格构建完成")
 
 def build_grid_od_10000():
+    """
+    构建与 chicago_grid 对齐的 100x100 OD 网格
+    使用相同的 EPSG:3857 投影坐标系
+    """
+    # 读取 chicago_grid 获取边界
+    grid_orig = gpd.read_file("data/processed/chicago_grid.shp")
+    bounds = grid_orig.total_bounds  # [minx, miny, maxx, maxy]
+
+    print(f"原始网格边界: [{bounds[0]:.2f}, {bounds[1]:.2f}, {bounds[2]:.2f}, {bounds[3]:.2f}]")
+
     # 参数
     NUM_X = 100
     NUM_Y = 100
-    LON_MIN, LON_MAX = -88.0, -87.5   # 示例范围
-    LAT_MIN, LAT_MAX = 41.0, 42.0
 
-    dx = (LON_MAX - LON_MIN) / NUM_X
-    dy = (LAT_MAX - LAT_MIN) / NUM_Y
+    dx = (bounds[2] - bounds[0]) / NUM_X
+    dy = (bounds[3] - bounds[1]) / NUM_Y
 
     geoms = []
     for i in range(NUM_X):
         for j in range(NUM_Y):
-            x0 = LON_MIN + i*dx
-            y0 = LAT_MIN + j*dy
+            x0 = bounds[0] + i*dx
+            y0 = bounds[1] + j*dy
             x1 = x0 + dx
             y1 = y0 + dy
             geoms.append(box(x0, y0, x1, y1))
 
-    grid_big = gpd.GeoDataFrame({"geometry": geoms})
-    grid_big.crs = "EPSG:3857"   # 和原始网格一致
-    grid_big.to_file("big_grid_10000.shp")
+    grid_big = gpd.GeoDataFrame({"geometry": geoms}, crs=grid_orig.crs)
 
-# build_grid_od_10000()
+    # 保存
+    os.makedirs("data/processed", exist_ok=True)
+    grid_big.to_file("data/processed/big_grid_10000.shp")
+
+    print(f"大网格构建完成: {len(grid_big)} 个网格")
+    print(f"CRS: {grid_big.crs}")
+    print(f"保存到: data/processed/big_grid_10000.shp")
+
+build_grid_od_10000()

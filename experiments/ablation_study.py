@@ -8,6 +8,7 @@ import os
 import sys
 import json
 import torch
+import torch.nn as nn
 import numpy as np
 import pandas as pd
 from datetime import datetime
@@ -18,7 +19,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from src.train_stgcn_trans import (
     SpatioTemporalTransformer, CrimeDataset,
-    zinb_loss, calculate_metrics
+    zinb_loss, calculate_advanced_metrics
 )
 from torch.utils.data import DataLoader
 
@@ -28,7 +29,9 @@ from torch.utils.data import DataLoader
 # ================================
 class AblationConfig:
     """消融实验配置"""
-    DATA_DIR = "data/processed"
+    # 使用相对于脚本的路径，确保在任何目录运行都能正确加载
+    SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+    DATA_DIR = os.path.join(SCRIPT_DIR, "..", "data", "processed")
     CHECKPOINT_DIR = "checkpoints/ablation"
     RESULT_DIR = "experiments/results"
 
@@ -54,99 +57,76 @@ os.makedirs(AblationConfig.RESULT_DIR, exist_ok=True)
 # ================================
 
 ABLATION_VARIANTS = {
-    # 主消融实验
+    # 主消融实验 - 与SpatioTemporalTransformer参数对齐
     'Full_Model': {
-        'description': '完整模型',
-        'use_semantic_gate': True,
+        'description': '完整模型 (自适应专家融合 + CPTED知识)',
+        'use_semantic_gate': True,  # 主模型实际参数名
         'use_near_repeat': True,
-        'semantic_mode': 'gate',  # gate, concat, none
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
+        'semantic_dim': None,  # None表示使用实际semantic_dim
         'loss_type': 'zinb'
     },
 
-    'w/o_Semantic': {
-        'description': '移除LLM语义嵌入',
+    # ========== 自适应专家消融 ==========
+    'w_o_Adaptive_Routing': {
+        'description': '移除自适应路由，退化为特征拼接',
+        'use_semantic_gate': False,  # 关闭自适应融合
+        'use_near_repeat': True,
+        'semantic_dim': None,
+        'loss_type': 'zinb'
+    },
+
+    'w_o_Semantic': {
+        'description': '移除LLM语义嵌入（semantic_dim=0）',
         'use_semantic_gate': False,
         'use_near_repeat': True,
-        'semantic_mode': 'none',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
+        'semantic_dim': 0,  # 显式设为0
         'loss_type': 'zinb'
     },
 
-    'w/o_Semantic_Gate': {
-        'description': '语义直接拼接（无门控）',
+    'w_o_CPTED_Knowledge': {
+        'description': 'CPTED知识消融（通过移除语义嵌入间接验证）',
         'use_semantic_gate': False,
         'use_near_repeat': True,
-        'semantic_mode': 'concat',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
+        'semantic_dim': 0,
         'loss_type': 'zinb'
     },
 
-    'w/o_Near_Repeat': {
+    # ========== 功能模块消融 ==========
+    'w_o_Near_Repeat': {
         'description': '移除近重复效应模块',
         'use_semantic_gate': True,
-        'use_near_repeat': False,
-        'semantic_mode': 'gate',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
+        'use_near_repeat': False,  # 关闭近重复效应
+        'semantic_dim': None,
         'loss_type': 'zinb'
     },
 
-    'w/o_Hypergraph': {
-        'description': '移除超图注意力',
+    'w_o_Hypergraph': {
+        'description': '移除超图注意力 (简化空间编码)',
         'use_semantic_gate': True,
         'use_near_repeat': True,
-        'semantic_mode': 'gate',
-        'use_hypergraph': False,
-        'use_cross_fusion': True,
+        'semantic_dim': None,
+        'skip_hypergraph': True,  # 标记跳过超图
         'loss_type': 'zinb'
     },
 
-    'w/o_Cross_Fusion': {
-        'description': '静态/动态特征直接相加',
-        'use_semantic_gate': True,
-        'use_near_repeat': True,
-        'semantic_mode': 'gate',
-        'use_hypergraph': True,
-        'use_cross_fusion': False,
-        'loss_type': 'zinb'
-    },
-
-    # 组件替换消融
-    'Gating_to_Attention': {
-        'description': '门控替换为注意力融合',
-        'use_semantic_gate': False,  # 使用注意力
-        'use_near_repeat': True,
-        'semantic_mode': 'attention',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
-        'loss_type': 'zinb'
-    },
-
-    'NR_Fixed_Params': {
-        'description': '近重复效应使用固定参数',
-        'use_semantic_gate': True,
-        'use_near_repeat': True,
-        'semantic_mode': 'gate',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
-        'loss_type': 'zinb',
-        'nr_fixed': True  # 固定参数
-    },
-
+    # 损失函数消融
     'Loss_MSE': {
         'description': 'ZINB替换为MSE损失',
         'use_semantic_gate': True,
         'use_near_repeat': True,
-        'semantic_mode': 'gate',
-        'use_hypergraph': True,
-        'use_cross_fusion': True,
+        'semantic_dim': None,
         'loss_type': 'mse'
     }
 }
+
+
+# ================================
+# 超图消融用Identity模块
+# ================================
+class IdentityHypergraph(nn.Module):
+    """用于消融实验的恒等超图模块"""
+    def forward(self, x, H, return_attention=False, **kwargs):
+        return (x, None) if return_attention else x
 
 
 # ================================
@@ -165,44 +145,44 @@ class AblationModel(nn.Module):
 
         self.config = config
         self.loss_type = config.get('loss_type', 'zinb')
+        self.skip_hypergraph = config.get('skip_hypergraph', False)
 
-        # 创建基础模型
+        # 确定实际使用的semantic_dim
+        actual_semantic_dim = config.get('semantic_dim', semantic_dim)
+        if actual_semantic_dim is None:
+            actual_semantic_dim = semantic_dim
+
+        print(f"  Creating model with semantic_dim={actual_semantic_dim}, "
+              f"use_semantic_gate={config.get('use_semantic_gate', True)}, "
+              f"use_near_repeat={config.get('use_near_repeat', True)}")
+
+        # 创建基础模型 - 使用与主模型一致的参数名
         model_kwargs = {
             'static_dim': static_dim,
             'dynamic_dim': dynamic_dim,
-            'semantic_dim': semantic_dim if config['semantic_mode'] != 'none' else 0,
+            'semantic_dim': actual_semantic_dim,
             'hidden_dim': AblationConfig.HIDDEN_DIM,
             'num_heads': AblationConfig.NUM_HEADS,
             'dropout': AblationConfig.DROPOUT,
             'num_nodes': num_nodes,
-            'use_semantic_gate': config['use_semantic_gate'] and config['semantic_mode'] == 'gate',
-            'use_near_repeat': config['use_near_repeat']
+            'use_semantic_gate': config.get('use_semantic_gate', True),
+            'use_near_repeat': config.get('use_near_repeat', True),
+            'distance_matrix': None  # 使用A_distance作为距离信息
         }
 
         self.base_model = base_model_class(**model_kwargs)
 
-        # 特殊组件处理
-        if config['semantic_mode'] == 'attention':
-            # 替换门控为注意力
-            from src.train_stgcn_trans import CrossAttentionFusion
-            self.semantic_fusion = CrossAttentionFusion(
-                AblationConfig.HIDDEN_DIM,
-                AblationConfig.NUM_HEADS,
-                AblationConfig.DROPOUT
-            )
-
-        if not config['use_cross_fusion']:
-            # 移除交叉融合，使用简单相加
-            self.cross_fusion = None
-            self.fusion_weight = nn.Parameter(torch.tensor(0.5))
-
-        if not config['use_hypergraph']:
-            # 禁用超图注意力
-            self.base_model.hypergraph_attn = lambda x, H, **kwargs: (x, None)
+        # 如果跳过超图，直接替换为Identity模块
+        if self.skip_hypergraph:
+            self.base_model.hypergraph_attn = IdentityHypergraph()
 
     def forward(self, X, A_spatial, A_distance, A_crime, A_hypergraph,
                 OD=None, semantic_embed=None, crime_history=None, return_attention=False):
         """前向传播"""
+
+        # 如果 semantic_dim=0，不传入语义嵌入（避免维度不匹配）
+        if self.config.get('semantic_dim') == 0:
+            semantic_embed = None
 
         # 调用基础模型
         outputs = self.base_model(
@@ -277,6 +257,7 @@ def train_ablation_variant(variant_name: str, variant_config: dict,
             X_batch = X_batch.to(AblationConfig.DEVICE)
             Y_batch = Y_batch.to(AblationConfig.DEVICE)
             A_crime_batch = A_crime_batch.to(AblationConfig.DEVICE)
+            OD_batch = OD_batch.to(AblationConfig.DEVICE)
 
             optimizer.zero_grad()
 
@@ -310,6 +291,7 @@ def train_ablation_variant(variant_name: str, variant_config: dict,
                 X_batch = X_batch.to(AblationConfig.DEVICE)
                 Y_batch = Y_batch.to(AblationConfig.DEVICE)
                 A_crime_batch = A_crime_batch.to(AblationConfig.DEVICE)
+                OD_batch = OD_batch.to(AblationConfig.DEVICE)
 
                 crime_history = X_batch[:, :, :, -7:]
                 crime_history = crime_history[:, :, :, 0]
@@ -357,6 +339,7 @@ def train_ablation_variant(variant_name: str, variant_config: dict,
             X_batch = X_batch.to(AblationConfig.DEVICE)
             Y_batch = Y_batch.to(AblationConfig.DEVICE)
             A_crime_batch = A_crime_batch.to(AblationConfig.DEVICE)
+            OD_batch = OD_batch.to(AblationConfig.DEVICE)
 
             crime_history = X_batch[:, :, :, -7:]
             crime_history = crime_history[:, :, :, 0]
@@ -375,7 +358,7 @@ def train_ablation_variant(variant_name: str, variant_config: dict,
     y_pred = np.vstack(preds)
     y_true = np.vstack(targets)
 
-    results = calculate_metrics(y_true, y_pred, k_percent=0.1)
+    results = calculate_advanced_metrics(y_true, y_pred, k_percent=0.1)
 
     print(f"\nResults for {variant_name}:")
     for metric, value in results.items():
@@ -403,9 +386,12 @@ def load_and_prepare_data():
     A_hypergraph = np.load(f"{AblationConfig.DATA_DIR}/adj_hypergraph.npy")
 
     semantic_embed = None
-    semantic_path = f"{AblationConfig.DATA_DIR}/semantic_embedding.npy"
+    semantic_path = f"{AblationConfig.DATA_DIR}/semantic_embedding_rag.npy"
     if os.path.exists(semantic_path):
         semantic_embed = np.load(semantic_path)
+        print(f"Loaded semantic embedding: {semantic_embed.shape}")
+    else:
+        print(f"Warning: Semantic embedding not found at {semantic_path}")
 
     # 构建窗口
     window = 30

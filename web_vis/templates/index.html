@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>芝加哥暴力犯罪预测可视化系统</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f5f5f5;
+        }
+
+        #map {
+            height: 70vh;
+            width: 100%;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .legend {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            line-height: 1.8;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 5px 0;
+        }
+
+        .legend-color {
+            width: 30px;
+            height: 20px;
+            margin-right: 10px;
+            border-radius: 3px;
+        }
+
+        .stats-card {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .risk-very-high { background-color: #d73027; color: white; }
+        .risk-high { background-color: #fc8d59; }
+        .risk-medium { background-color: #fee08b; }
+        .risk-low { background-color: #91bfdb; }
+
+        .hotspot-item {
+            padding: 10px;
+            margin: 5px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .hotspot-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        .navbar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px 0;
+            margin-bottom: 20px;
+        }
+
+        .control-panel {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .loading {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255,255,255,0.9);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+        }
+
+        .spinner {
+            width: 50px;
+            height: 50px;
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div id="loading" class="loading">
+        <div class="text-center">
+            <div class="spinner"></div>
+            <p class="mt-3">正在加载数据和模型预测...</p>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <div class="navbar">
+        <div class="container">
+            <h3 class="m-0">
+                <i class="bi bi-map"></i> 芝加哥暴力犯罪预测可视化系统
+            </h3>
+            <p class="m-0 opacity-75">基于ACR-ST模型的时空风险预测</p>
+        </div>
+    </div>
+
+    <div class="container-fluid">
+        <div class="row">
+            <!-- Left Panel: Controls and Stats -->
+            <div class="col-md-3">
+                <!-- Date Selection -->
+                <div class="control-panel">
+                    <h5><i class="bi bi-calendar"></i> 选择预测日期</h5>
+                    <select id="dateSelect" class="form-select mb-3">
+                        <option value="">加载中...</option>
+                    </select>
+
+                    <div class="d-grid gap-2">
+                        <button id="showAllBtn" class="btn btn-primary btn-sm">
+                            显示全部区域
+                        </button>
+                        <button id="showHotspotsBtn" class="btn btn-danger btn-sm">
+                            只显示高风险区域 (Top 10%)
+                        </button>
+                        <button id="animateBtn" class="btn btn-success btn-sm">
+                            <i class="bi bi-play"></i> 播放时间序列
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Statistics -->
+                <div class="stats-card">
+                    <h5><i class="bi bi-graph-up"></i> 统计概览</h5>
+                    <div id="statsContent">
+                        <p class="text-muted">请选择日期查看统计</p>
+                    </div>
+                </div>
+
+                <!-- Legend -->
+                <div class="legend">
+                    <h6><strong>风险等级说明</strong></h6>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #d73027;"></div>
+                        <span>极高风险 (E[Y] > 2.0)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #fc8d59;"></div>
+                        <span>高风险 (1.0 - 2.0)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #fee08b;"></div>
+                        <span>中风险 (0.5 - 1.0)</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #91bfdb;"></div>
+                        <span>低风险 (< 0.5)</span>
+                    </div>
+                    <hr>
+                    <small class="text-muted">
+                        <strong>Hit Rate 53.4%:</strong> 巡逻Top 10%区域可拦截过半暴力犯罪<br>
+                        <strong>PAI 3.61:</strong> 效率是随机巡逻的3.6倍
+                    </small>
+                </div>
+            </div>
+
+            <!-- Center: Map -->
+            <div class="col-md-6">
+                <div id="map"></div>
+            </div>
+
+            <!-- Right Panel: Hotspots -->
+            <div class="col-md-3">
+                <div class="stats-card">
+                    <h5><i class="bi bi-exclamation-triangle"></i> 高风险热点排行</h5>
+                    <div id="hotspotsList" style="max-height: 60vh; overflow-y: auto;">
+                        <p class="text-muted">请选择日期查看热点</p>
+                    </div>
+                </div>
+
+                <!-- Policy Suggestions -->
+                <div class="stats-card">
+                    <h5><i class="bi bi-lightbulb"></i> 政策建议</h5>
+                    <div id="policyContent">
+                        <p class="text-muted">基于当前选择区域生成建议...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // Global variables
+        let map;
+        let gridLayer = null;
+        let hotspotMarkers = [];
+        let gridData = null;
+        let predictions = null;
+        let currentDate = null;
+        let isAnimating = false;
+
+        // Color scale for risk levels
+        const colorScale = {
+            'very_high': '#d73027',
+            'high': '#fc8d59',
+            'medium': '#fee08b',
+            'low': '#91bfdb'
+        };
+
+        // Initialize map
+        function initMap() {
+            map = L.map('map').setView([41.8781, -87.6298], 11);
+
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors'
+            }).addTo(map);
+
+            // Add scale control
+            L.control.scale().addTo(map);
+        }
+
+        // Load initial data
+        async function loadData() {
+            try {
+                // Load grid data
+                const gridResponse = await fetch('/api/grid');
+                gridData = await gridResponse.json();
+
+                // Load available dates
+                const datesResponse = await fetch('/api/predictions');
+                predictions = await datesResponse.json();
+
+                // Populate date selector
+                const dateSelect = document.getElementById('dateSelect');
+                dateSelect.innerHTML = '';
+                predictions.dates.forEach(date => {
+                    const option = document.createElement('option');
+                    option.value = date;
+                    option.textContent = date;
+                    dateSelect.appendChild(option);
+                });
+
+                // Select first date by default
+                if (predictions.dates.length > 0) {
+                    currentDate = predictions.dates[0];
+                    dateSelect.value = currentDate;
+                    await loadPrediction(currentDate);
+                }
+
+                // Hide loading
+                document.getElementById('loading').style.display = 'none';
+
+            } catch (error) {
+                console.error('Error loading data:', error);
+                alert('数据加载失败，请确保已运行 prepare_data.py');
+            }
+        }
+
+        // Load prediction for specific date
+        async function loadPrediction(date) {
+            try {
+                currentDate = date;
+
+                const response = await fetch(`/api/prediction/${date}`);
+                const data = await response.json();
+
+                // Update map
+                updateMap(data);
+
+                // Update statistics
+                updateStats(data);
+
+                // Update hotspots
+                await updateHotspots(date);
+
+                // Update policy suggestions
+                updatePolicySuggestions(data);
+
+            } catch (error) {
+                console.error('Error loading prediction:', error);
+            }
+        }
+
+        // Update map with prediction data
+        function updateMap(predictionData) {
+            // Remove existing layer
+            if (gridLayer) {
+                map.removeLayer(gridLayer);
+            }
+
+            // Create GeoJSON layer with styling
+            gridLayer = L.geoJSON(gridData, {
+                style: function(feature) {
+                    const gridId = feature.properties.grid_id;
+                    const riskLevel = predictionData.risk_levels[gridId];
+
+                    return {
+                        fillColor: colorScale[riskLevel] || '#91bfdb',
+                        weight: 1,
+                        opacity: 0.8,
+                        color: '#666',
+                        fillOpacity: 0.6
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    const gridId = feature.properties.grid_id;
+                    const riskScore = predictionData.risk_scores[gridId];
+                    const riskLevel = predictionData.risk_levels[gridId];
+
+                    // Popup content
+                    const popupContent = `
+                        <div style="min-width: 200px;">
+                            <h6>网格 ID: ${gridId}</h6>
+                            <hr style="margin: 8px 0;">
+                            <p style="margin: 5px 0;">
+                                <strong>风险分数:</strong> ${riskScore.toFixed(3)}
+                            </p>
+                            <p style="margin: 5px 0;">
+                                <strong>风险等级:</strong>
+                                <span style="color: ${colorScale[riskLevel]}; font-weight: bold;">
+                                    ${getRiskLevelText(riskLevel)}
+                                </span>
+                            </p>
+                            <p style="margin: 5px 0; font-size: 12px; color: #666;">
+                                期望犯罪数: ${riskScore.toFixed(2)}
+                            </p>
+                        </div>
+                    `;
+
+                    layer.bindPopup(popupContent);
+
+                    // Highlight on hover
+                    layer.on({
+                        mouseover: function(e) {
+                            e.target.setStyle({
+                                weight: 3,
+                                color: '#333',
+                                fillOpacity: 0.8
+                            });
+                        },
+                        mouseout: function(e) {
+                            e.target.setStyle({
+                                weight: 1,
+                                color: '#666',
+                                fillOpacity: 0.6
+                            });
+                        }
+                    });
+                }
+            }).addTo(map);
+
+            // Fit map to grid bounds
+            map.fitBounds(gridLayer.getBounds());
+        }
+
+        // Update statistics panel
+        function updateStats(data) {
+            const statsHtml = `
+                <div class="row">
+                    <div class="col-6">
+                        <div class="text-center p-2 bg-light rounded">
+                            <h4 class="text-primary">${data.total_expected.toFixed(1)}</h4>
+                            <small>期望犯罪总数</small>
+                        </div>
+                    </div>
+                    <div class="col-6">
+                        <div class="text-center p-2 bg-light rounded">
+                            <h4 class="text-danger">${data.top_10_percent.length}</h4>
+                            <small>高风险区域数</small>
+                        </div>
+                    </div>
+                </div>
+                <hr>
+                <h6>风险分布:</h6>
+                <div class="progress mb-2" style="height: 25px;">
+                    <div class="progress-bar bg-danger" style="width: ${(data.statistics.very_high / data.risk_scores.length * 100).toFixed(1)}%">
+                        ${data.statistics.very_high}
+                    </div>
+                    <div class="progress-bar bg-warning" style="width: ${(data.statistics.high / data.risk_scores.length * 100).toFixed(1)}%">
+                        ${data.statistics.high}
+                    </div>
+                    <div class="progress-bar bg-info" style="width: ${(data.statistics.medium / data.risk_scores.length * 100).toFixed(1)}%">
+                        ${data.statistics.medium}
+                    </div>
+                    <div class="progress-bar bg-success" style="width: ${(data.statistics.low / data.risk_scores.length * 100).toFixed(1)}%">
+                        ${data.statistics.low}
+                    </div>
+                </div>
+                <div class="d-flex justify-content-between small">
+                    <span><span class="badge bg-danger">极高</span> ${data.statistics.very_high}</span>
+                    <span><span class="badge bg-warning">高</span> ${data.statistics.high}</span>
+                    <span><span class="badge bg-info">中</span> ${data.statistics.medium}</span>
+                    <span><span class="badge bg-success">低</span> ${data.statistics.low}</span>
+                </div>
+            `;
+
+            document.getElementById('statsContent').innerHTML = statsHtml;
+        }
+
+        // Update hotspots list
+        async function updateHotspots(date) {
+            try {
+                const response = await fetch(`/api/prediction/${date}/hotspots`);
+                const data = await response.json();
+
+                let html = '';
+                data.hotspots.slice(0, 20).forEach((spot, index) => {
+                    const colorClass = spot.risk_level === 'very_high' ? 'bg-danger text-white' :
+                                      spot.risk_level === 'high' ? 'bg-warning' : 'bg-info';
+
+                    html += `
+                        <div class="hotspot-item ${colorClass}" onclick="flyToGrid(${spot.lat}, ${spot.lon})">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>#${index + 1} 网格 ${spot.grid_id}</strong>
+                                    <div class="small">
+                                        风险: ${spot.risk_score.toFixed(3)} |
+                                        ${getRiskLevelText(spot.risk_level)}
+                                    </div>
+                                </div>
+                                <i class="bi bi-geo-alt"></i>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                document.getElementById('hotspotsList').innerHTML = html;
+
+            } catch (error) {
+                console.error('Error loading hotspots:', error);
+            }
+        }
+
+        // Update policy suggestions
+        function updatePolicySuggestions(data) {
+            const veryHighCount = data.statistics.very_high;
+            const highCount = data.statistics.high;
+
+            let suggestions = [];
+
+            if (veryHighCount > 0) {
+                suggestions.push(`<div class="alert alert-danger">
+                    <strong>紧急措施:</strong> ${veryHighCount}个网格处于极高风险，建议立即派遣2辆巡逻车+步行巡逻，每2小时覆盖一次。
+                </div>`);
+            }
+
+            if (highCount > 0) {
+                suggestions.push(`<div class="alert alert-warning">
+                    <strong>高风险区域:</strong> ${highCount}个网格处于高风险，建议每4小时巡逻一次。
+                </div>`);
+            }
+
+            suggestions.push(`<div class="alert alert-info">
+                <strong>资源配置建议:</strong><br>
+                • 将50%警力投入Top 10%高风险区域 (Hit Rate 53.4%)<br>
+                • 重点关注近重复效应区域（近期发生过枪击的周边200米）<br>
+                • 优先改善照明条件（特征重要性最高）
+            </div>`);
+
+            document.getElementById('policyContent').innerHTML = suggestions.join('');
+        }
+
+        // Fly to grid location
+        function flyToGrid(lat, lon) {
+            map.flyTo([lat, lon], 15, {
+                duration: 1.5
+            });
+
+            // Add temporary marker
+            const marker = L.circleMarker([lat, lon], {
+                radius: 10,
+                fillColor: '#ff6b6b',
+                color: '#c92a2a',
+                weight: 2,
+                fillOpacity: 0.8
+            }).addTo(map);
+
+            setTimeout(() => {
+                map.removeLayer(marker);
+            }, 3000);
+        }
+
+        // Get risk level text
+        function getRiskLevelText(level) {
+            const texts = {
+                'very_high': '极高风险',
+                'high': '高风险',
+                'medium': '中风险',
+                'low': '低风险'
+            };
+            return texts[level] || level;
+        }
+
+        // Show only hotspots
+        function showHotspotsOnly() {
+            if (!gridLayer || !currentDate) return;
+
+            fetch(`/api/prediction/${currentDate}`)
+                .then(r => r.json())
+                .then(data => {
+                    gridLayer.eachLayer(layer => {
+                        const gridId = layer.feature.properties.grid_id;
+                        if (data.top_10_percent.includes(gridId)) {
+                            layer.setStyle({ opacity: 1, fillOpacity: 0.8 });
+                        } else {
+                            layer.setStyle({ opacity: 0.1, fillOpacity: 0.05 });
+                        }
+                    });
+                });
+        }
+
+        // Show all grids
+        function showAllGrids() {
+            if (!gridLayer) return;
+
+            gridLayer.eachLayer(layer => {
+                layer.setStyle({ opacity: 0.8, fillOpacity: 0.6 });
+            });
+        }
+
+        // Animate through dates
+        async function animateDates() {
+            if (isAnimating) {
+                isAnimating = false;
+                document.getElementById('animateBtn').innerHTML = '<i class="bi bi-play"></i> 播放时间序列';
+                return;
+            }
+
+            isAnimating = true;
+            document.getElementById('animateBtn').innerHTML = '<i class="bi bi-pause"></i> 暂停播放';
+
+            const dates = predictions.dates;
+            let currentIndex = 0;
+
+            while (isAnimating && currentIndex < dates.length) {
+                const date = dates[currentIndex];
+                document.getElementById('dateSelect').value = date;
+                await loadPrediction(date);
+
+                currentIndex++;
+                if (currentIndex >= dates.length) currentIndex = 0;
+
+                await new Promise(r => setTimeout(r, 2000)); // 2 seconds per frame
+            }
+
+            isAnimating = false;
+            document.getElementById('animateBtn').innerHTML = '<i class="bi bi-play"></i> 播放时间序列';
+        }
+
+        // Event listeners
+        document.getElementById('dateSelect').addEventListener('change', (e) => {
+            loadPrediction(e.target.value);
+        });
+
+        document.getElementById('showAllBtn').addEventListener('click', showAllGrids);
+        document.getElementById('showHotspotsBtn').addEventListener('click', showHotspotsOnly);
+        document.getElementById('animateBtn').addEventListener('click', animateDates);
+
+        // Initialize
+        initMap();
+        loadData();
+    </script>
+</body>
+</html>

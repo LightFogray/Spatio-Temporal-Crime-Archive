@@ -248,7 +248,6 @@ def build_poi_features():
 
     print("POI特征生成完成")
 
-
 def build_road_features():
 
     grid = gpd.read_file("data/processed/chicago_grid.shp")
@@ -282,8 +281,8 @@ def build_nightlight_feature(target_resolution=500):
     grid = gpd.read_file("data/processed/chicago_grid.shp")
     print(grid.crs)
     # 首先降低TIFF分辨率
-    tif_path = "data/raw/Chicago_VIIRS_2025.tif"
-    resampled_tif = "data/processed/Chicago_VIIRS_2025_resampled.tif"
+    tif_path = "data/raw/Chicago_NTL_2022_2023.tif"
+    resampled_tif = "data/processed/Chicago_NTL_2022_2023_resampled.tif"
     dst_crs = "EPSG:3857"
 
     with rasterio.open(tif_path) as src:
@@ -352,7 +351,7 @@ def roadshp2npy():
 import pandas as pd
 def weather_features():
     # 这里可以添加天气特征的生成代码
-    weather = pd.read_csv("data/external/chicago_weather_2021-2025.csv")
+    weather = pd.read_csv("data/external/chicago_weather_2022-2023.csv")
     weather["temp_mean"] = (
     weather["temp_max"] + weather["temp_min"]) / 2
     weather["date"] = pd.to_datetime(weather["date"])
@@ -385,7 +384,7 @@ def weather_features():
 # 从卫星遥感提取的绿地覆盖特征
 def build_green_remote_features():
 
-    df = pd.read_csv("data/raw/Chicago_NDVI.csv")
+    df = pd.read_csv("data/raw/Chicago_NDVI_grid.csv")
     features = df[["NDVI_mean","NDVI_std"]].values
     np.save(
         "data/processed/green_remote_features.npy",
@@ -454,12 +453,6 @@ def build_camera_features():
     print("shape:", features.shape)
 
 # build_nightlight_feature()
-# build_road_features()
-# roadshp2npy()
-# build_landuse_features()
-# build_poi_features()
-# build_green_features()
 # weather_features()
 # build_green_remote_features()
-# fuse_green_features()
-# build_camera_features()
+fuse_green_features()

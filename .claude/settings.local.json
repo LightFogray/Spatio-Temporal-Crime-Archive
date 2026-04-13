@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la data/processed/semantic*)",
+      "Bash(python -c \"import numpy as np; emb=np.load\\('data/processed/semantic_embedding.npy'\\); print\\(f'Shape: {emb.shape}, dtype: {emb.dtype}'\\)\")",
+      "Bash(python -c \"import numpy as np; emb=np.load\\('data/processed/semantic_embedding_rag.npy'\\); print\\(f'RAG embedding shape: {emb.shape}'\\)\")",
+      "Bash(python -c \"import numpy as np; X=np.load\\('data/processed/X.npy'\\); print\\(f'X shape: {X.shape}'\\)\")",
+      "Bash(python experiments/cold_start_analysis.py)",
+      "Bash(python -c \"import numpy as np; print\\(np.__version__\\)\")",
+      "Bash(python experiments/cold_start_simple.py)",
+      "Bash(python src/epstd_stage1.py)",
+      "Bash(python src/epstd_stage2.py)"
+    ]
+  }
+}

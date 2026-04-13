@@ -1,22 +1,22 @@
 import geopandas as gpd
 import numpy as np
-from sklearn.metrics.pairwise import euclidean_distances,cosine_similarity
+from sklearn.metrics.pairwise import euclidean_distances, cosine_similarity
 
 
 # 读取grid数据
 grid = gpd.read_file("data/processed/chicago_grid.shp")
 N = len(grid)
-print("grid number:",N)
+print("grid number:", N)
 
 # 构建空间邻接图
 def build_adj_adaptive():
-    A_spatial = np.zeros((N,N))
+    A_spatial = np.zeros((N, N))
 
     for i in range(N):
         for j in range(N):
             if grid.geometry[i].touches(grid.geometry[j]):
-                A_spatial[i,j] = 1
-    
+                A_spatial[i, j] = 1
+
     poi = np.load("data/processed/poi_features.npy")
     landuse = np.load("data/processed/landuse_features.npy")
     night = np.load("data/processed/nightlight_features.npy")
@@ -35,7 +35,10 @@ def build_adj_adaptive():
     S_feature = cosine_similarity(feature)
     A_adaptive = A_spatial * S_feature
     A_adaptive = A_adaptive.astype(np.float32)
-    np.save("data/processed/adj_adaptive.npy",A_adaptive)
+    np.save("data/processed/adj_adaptive.npy", A_adaptive)
+    print("adj_adaptive saved, shape:", A_adaptive.shape)
+    return A_adaptive
+
 
 # 距离衰减图
 def build_adj_distance():
@@ -45,77 +48,246 @@ def build_adj_distance():
     ])
     dist = euclidean_distances(coords)
     sigma = dist.mean()
-    A_distance = np.exp(-(dist**2)/(sigma**2))
+    A_distance = np.exp(-(dist**2) / (sigma**2))
     A_distance = A_distance.astype(np.float32)
-    np.save("data/processed/adj_distance.npy",A_distance)
+    np.save("data/processed/adj_distance.npy", A_distance)
+    print("adj_distance saved, shape:", A_distance.shape)
+    return A_distance
 
-# 犯罪传播图
-# A crime diffusion graph was constructed by measuring the Pearson correlation between crime time series across spatial units.
-# def build_adj_crime():
-#     crime = np.load("data/processed/crime_grid_timeseries.npy")
-#     corr = np.corrcoef(crime.T)
-#     A_crime = np.where(corr > 0.3, corr, 0)
-#     np.save("data/processed/adj_crime.npy",A_crime)
 
-# 改进为动态犯罪传播图，使用滚动窗口计算时间相关性，捕捉犯罪模式的动态变化
-def dynamic_adj_crime_gaussian(window=30, sigma=None):
+# ==================== 双犯罪传播图 ====================
+
+def build_dual_crime_graphs(window=30, sigma=None, use_spatial_mask=True):
     """
-    构建犯罪动态图，使用 Gaussian similarity 替代相关系数
+    分别构建暴力犯罪和财产犯罪的传播图（支持稀疏优化）
+
     Args:
         window: 时间窗口大小
-        sigma: 高斯核带宽，若为 None，则使用窗口内所有元素的 std 作为 sigma
+        sigma: 高斯核带宽
+        use_spatial_mask: 是否使用空间邻近图作为掩码进行稀疏化
+
     Returns:
-        A_crime_dynamic: (T-window, N, N)
+        A_violent: 暴力犯罪传播图
+        A_property: 财产犯罪传播图
     """
-    crime = np.load("data/processed/crime_grid_timeseries.npy")  # (T, N)
-    T, N = crime.shape
-    A_crime_list = []
+    crime = np.load("data/processed/crime_combined_timeseries.npy")  # (T, N, 2)
+    T, N, C = crime.shape
 
-    for t in range(window, T):
-        crime_window = crime[t-window:t]       # (window, N)
-        crime_window = crime_window.T           # (N, window)
+    print(f"Building dual crime graphs from crime shape: {crime.shape}")
+    print(f"  Channel 0: Violent Crime")
+    print(f"  Channel 1: Property Crime")
+    print(f"  Sparse optimization: {use_spatial_mask}")
 
-        # 计算 sigma
-        if sigma is None:
-            sigma_val = np.std(crime_window)
-            if sigma_val == 0:
-                sigma_val = 1.0
-        else:
-            sigma_val = sigma
+    # 加载空间邻近图作为掩码
+    spatial_mask = None
+    if use_spatial_mask:
+        try:
+            A_spatial = np.load("data/processed/adj_adaptive.npy")  # (N, N)
+            # 转换为布尔掩码（只保留有空间连接的边）
+            spatial_mask = (A_spatial > 0)
+            avg_degree = spatial_mask.sum(axis=1).mean()
+            print(f"  Spatial mask loaded: avg_degree={avg_degree:.2f}")
+            print(f"  Computation reduction: {N**2} -> {int(N * avg_degree)} ({N**2 / (N * avg_degree):.1f}x)")
+        except FileNotFoundError:
+            print("  Warning: Spatial mask not found, using dense computation")
+            use_spatial_mask = False
 
-        # pairwise squared distance
-        diff = crime_window[:, np.newaxis, :] - crime_window[np.newaxis, :, :]  # (N,N,window)
-        dist2 = np.sum(diff**2, axis=2)  # (N,N)
+    def compute_gaussian_similarity_sparse(crime_channel, window, sigma, mask):
+        """
+        稀疏高斯相似度计算
+        只计算 mask[i, j] == True 的位置
+        """
+        A_list = []
+        T_steps = crime_channel.shape[0]
+        N = crime_channel.shape[1]
 
-        # Gaussian similarity
-        sim = np.exp(-dist2 / (2*sigma_val**2)).astype(np.float32)
+        # 获取所有需要计算的边 (i, j)
+        edges = np.argwhere(mask)  # (E, 2)
+        print(f"  Computing {len(edges)} edges out of {N**2} possible")
 
-        # 负值置0（理论上不可能有负值，但保险起见）
-        sim[sim < 0] = 0.0
+        for t in range(window, T_steps):
+            crime_window = crime_channel[t-window:t].T  # (N, window)
 
-        A_crime_list.append(sim)
+            # 计算 sigma
+            if sigma is None:
+                sigma_val = np.std(crime_window)
+                if sigma_val == 0:
+                    sigma_val = 1.0
+            else:
+                sigma_val = sigma
 
-    A_crime_dynamic = np.array(A_crime_list, dtype=np.float32)  # (T-window, N, N)
-    np.save("data/processed/adj_crime_dynamic_gaussian.npy", A_crime_dynamic)
-    print("Gaussian crime dynamic graph saved, shape:", A_crime_dynamic.shape)
-    return A_crime_dynamic
+            # 初始化稀疏矩阵
+            sim = np.zeros((N, N), dtype=np.float32)
+
+            # 只对邻居计算相似度
+            for i, j in edges:
+                diff = crime_window[i] - crime_window[j]  # (window,)
+                dist2 = np.sum(diff ** 2)
+                sim[i, j] = np.exp(-dist2 / (2 * sigma_val ** 2))
+
+            # 对称化
+            sim = (sim + sim.T) / 2
+            A_list.append(sim)
+
+        return np.array(A_list, dtype=np.float32)
+
+    def compute_gaussian_similarity_dense(crime_channel, window, sigma):
+        """稠密高斯相似度计算（原始方法）"""
+        A_list = []
+        T_steps = crime_channel.shape[0]
+
+        for t in range(window, T_steps):
+            crime_window = crime_channel[t-window:t].T  # (N, window)
+
+            if sigma is None:
+                sigma_val = np.std(crime_window)
+                if sigma_val == 0:
+                    sigma_val = 1.0
+            else:
+                sigma_val = sigma
+
+            # pairwise squared distance
+            diff = crime_window[:, np.newaxis, :] - crime_window[np.newaxis, :, :]
+            dist2 = np.sum(diff**2, axis=2)
+
+            # Gaussian similarity
+            sim = np.exp(-dist2 / (2 * sigma_val**2))
+            sim[sim < 0] = 0.0
+
+            A_list.append(sim.astype(np.float32))
+
+        return np.array(A_list, dtype=np.float32)
+
+    # 分别计算两张图
+    crime_violent = crime[:, :, 0]  # (T, N)
+    crime_property = crime[:, :, 1]  # (T, N)
+
+    print("\nBuilding violent crime graph...")
+    if use_spatial_mask and spatial_mask is not None:
+        A_violent = compute_gaussian_similarity_sparse(crime_violent, window, sigma, spatial_mask)
+    else:
+        A_violent = compute_gaussian_similarity_dense(crime_violent, window, sigma)
+
+    print("Building property crime graph...")
+    if use_spatial_mask and spatial_mask is not None:
+        A_property = compute_gaussian_similarity_sparse(crime_property, window, sigma, spatial_mask)
+    else:
+        A_property = compute_gaussian_similarity_dense(crime_property, window, sigma)
+
+    # 保存
+    np.save("data/processed/adj_crime_violent.npy", A_violent)
+    np.save("data/processed/adj_crime_property.npy", A_property)
+
+    print(f"\nViolent crime graph saved: {A_violent.shape}")
+    print(f"Property crime graph saved: {A_property.shape}")
+    if use_spatial_mask:
+        print(f"  Sparse format: non-zero ~{(A_violent[0] > 0).sum() / A_violent[0].size * 100:.2f}%")
+
+    return A_violent, A_property
 
 
+# ==================== OD 流图构建 ====================
 
-# def build_all_adj():
-    # build_adj_adaptive()
-    # build_adj_distance()
-    # build_adj_crime()
-    # dynamic_adj_crime()
-    # A_spatial = np.load("data/processed/adj_adaptive.npy")
-    # A_distance = np.load("data/processed/adj_distance.npy")
-    # A_crime = np.load("data/processed/adj_crime_dynamic.npy")
-    # A = 0.5*A_spatial + 0.3*A_distance + 0.2*A_crime 
-    # np.save("data/processed/mixed_graph_adj_matrix.npy", A.astype(np.float32))
-dynamic_adj_crime_gaussian()
+def build_od_graph(K=10, threshold=0.3):
+    """
+    构建OD流功能相似图
+
+    基于OD流特征的功能相似性（人流模式相似的区域）
+
+    Args:
+        K: Top-K 稀疏化参数
+        threshold: 相似度阈值
+
+    Returns:
+        A_od: (N, N) OD功能相似图
+    """
+    od_flow = np.load("data/processed/dynamic_od_flow.npy")  # (T, N, 4)
+    T, N, C = od_flow.shape
+
+    print(f"\nBuilding OD graph from OD flow shape: {od_flow.shape}")
+    print(f"  Channels: bike_in, bike_out, taxi_in, taxi_out")
+
+    # 时间平均得到每个网格的OD特征
+    od_features = od_flow.mean(axis=0)  # (N, 4)
+
+    # 可选：使用PCA降维或保持原始特征
+    # 这里直接使用原始特征计算余弦相似度
+
+    # 计算余弦相似度
+    similarity = cosine_similarity(od_features)  # (N, N)
+
+    print(f"  OD similarity range: [{similarity.min():.4f}, {similarity.max():.4f}]")
+
+    # Top-K 稀疏化
+    A_od = np.zeros((N, N), dtype=np.float32)
+
+    for i in range(N):
+        # 找到相似度最高的K个邻居（包括自己）
+        top_k_idx = np.argsort(similarity[i])[-K:]
+
+        for idx in top_k_idx:
+            if similarity[i, idx] > threshold:
+                A_od[i, idx] = similarity[i, idx]
+
+    # 对称化
+    A_od = (A_od + A_od.T) / 2
+
+    # 归一化（行归一化）
+    row_sums = A_od.sum(axis=1, keepdims=True)
+    A_od = np.divide(A_od, row_sums, where=row_sums!=0)
+
+    # 保存
+    np.save("data/processed/adj_od.npy", A_od.astype(np.float32))
+
+    print(f"OD graph saved: {A_od.shape}")
+    print(f"  Non-zero elements: {(A_od > 0).sum()}/{A_od.size} ({(A_od > 0).mean()*100:.2f}%)")
+    print(f"  Average degree: {(A_od > 0).sum(axis=1).mean():.2f}")
+
+    return A_od
 
 
-# if __name__ == "__main__":
-#     build_all_adj()
+# ==================== 主流程 ====================
 
-# 因为图注意力融合是在模型结构中融合，所以这里不再预先融合邻接矩阵，而是直接在模型中加载三个邻接矩阵进行融合
+def build_all_graphs():
+    """构建所有图结构"""
+    print("="*60)
+    print("Building All Graph Structures")
+    print("="*60)
+
+    # 1. 基础空间图
+    print("\n[1/5] Building spatial adaptive graph...")
+    build_adj_adaptive()
+
+    # 2. 距离衰减图
+    print("\n[2/5] Building distance decay graph...")
+    build_adj_distance()
+
+    # 3. 双犯罪传播图
+    print("\n[3/5] Building dual crime diffusion graphs...")
+    build_dual_crime_graphs(window=30, sigma=None)
+
+    # 4. OD流图
+    print("\n[4/5] Building OD flow graph...")
+    build_od_graph(K=10, threshold=0.3)
+
+    # 5. 超图（如果存在）
+    print("\n[5/5] Checking hypergraph...")
+    if not os.path.exists("data/processed/adj_hypergraph.npy"):
+        print("  Hypergraph not found. Run build_stgcn_input.py to generate it.")
+    else:
+        print("  Hypergraph exists.")
+
+    print("\n" + "="*60)
+    print("All graphs built successfully!")
+    print("="*60)
+    print("\nGenerated files:")
+    print("  - adj_adaptive.npy (Spatial connectivity)")
+    print("  - adj_distance.npy (Distance decay)")
+    print("  - adj_crime_violent.npy (Violent crime diffusion)")
+    print("  - adj_crime_property.npy (Property crime diffusion)")
+    print("  - adj_od.npy (OD flow functional similarity)")
+
+
+import os
+if __name__ == "__main__":
+    build_all_graphs()

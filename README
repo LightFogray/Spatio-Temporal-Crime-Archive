@@ -300,3 +300,170 @@ Test MAE: 0.29601404070854187
 Test Hit Rate: 0.5159546643417611
 Test PAI: 3.4724748
 Test Jaccard: 0.2145769162277571
+
+==================================================
+测试结果:
+==================================================
+RMSE:      0.5020
+MAE:       0.2980
+Hit Rate:  0.5341
+PAI:       3.6124
+Jaccard:   0.2227
+==================================================
+
+近重复效应参数:
+  空间衰减率 α: 1.0507
+  时间衰减率 β: 0.8550
+
+
+==================================================
+测试结果:
+==================================================
+RMSE:      0.5014
+MAE:       0.2924
+Hit Rate:  0.5331
+PAI:       3.6084
+Jaccard:   0.2219
+==================================================
+
+近重复效应参数:
+  空间衰减率 α: 1.0558
+  时间衰减率 β: 0.8624
+
+  ==================================================
+测试结果:
+==================================================
+RMSE:      0.5018
+MAE:       0.2930
+Hit Rate:  0.5330
+PAI:       3.6046
+Jaccard:   0.2212
+==================================================
+
+近重复效应参数:
+  空间衰减率 α: 1.0750
+  时间衰减率 β: 0.9259
+
+生成注意力分析...
+预测期望犯罪数: (1, 1246)
+时间注意力层数: 3
+Computing feature importance for 43 features...
+  Feature 0/43...
+  Feature 10/43...
+  Feature 20/43...
+  Feature 30/43...
+  Feature 40/43...
+Feature importance computation complete!
+特征重要性: (43,)
+
+
+
+================================================================================
+Ablation Study Script
+================================================================================
+Loading data...
+Static dim: 24, Dynamic dim: 19
+Semantic dim: 0, Num nodes: 1246
+
+============================================================
+Training: Full_Model
+Description: 完整模型 (自适应专家融合 + CPTED知识)
+============================================================
+Epoch 10/100 | Train: 0.4442 | Val: 0.4524
+Epoch 20/100 | Train: 0.4427 | Val: 0.4514
+Epoch 30/100 | Train: 0.4417 | Val: 0.4511
+Early stopping at epoch 39
+
+Results for Full_Model:
+  HitRate: 0.5297
+  PAI: 3.5935
+  Jaccard: 0.2211
+
+============================================================
+Training: w_o_Adaptive_Routing
+Description: 移除自适应路由，退化为特征拼接
+============================================================
+Epoch 10/100 | Train: 0.4442 | Val: 0.4524
+Epoch 20/100 | Train: 0.4427 | Val: 0.4514
+Epoch 30/100 | Train: 0.4417 | Val: 0.4511
+Early stopping at epoch 39
+
+Results for w_o_Adaptive_Routing:
+  HitRate: 0.5297
+  PAI: 3.5935
+  Jaccard: 0.2211
+
+============================================================
+Training: w_o_Semantic
+Description: 移除LLM语义嵌入（semantic_dim=0）
+============================================================
+Epoch 10/100 | Train: 0.4442 | Val: 0.4524
+Epoch 20/100 | Train: 0.4427 | Val: 0.4514
+Epoch 30/100 | Train: 0.4417 | Val: 0.4511
+Early stopping at epoch 39
+
+Results for w_o_Semantic:
+  HitRate: 0.5297
+  PAI: 3.5935
+  Jaccard: 0.2211
+
+============================================================
+Training: w_o_CPTED_Knowledge
+Description: CPTED知识消融（通过移除语义嵌入间接验证）
+============================================================
+Epoch 10/100 | Train: 0.4442 | Val: 0.4524
+Epoch 20/100 | Train: 0.4427 | Val: 0.4514
+Epoch 30/100 | Train: 0.4417 | Val: 0.4511
+Early stopping at epoch 39
+
+Results for w_o_CPTED_Knowledge:
+  HitRate: 0.5297
+  PAI: 3.5935
+  Jaccard: 0.2211
+
+============================================================
+Training: w_o_Near_Repeat
+Description: 移除近重复效应模块
+============================================================
+Epoch 10/100 | Train: 0.4448 | Val: 0.4523
+Epoch 20/100 | Train: 0.4431 | Val: 0.4513
+Epoch 30/100 | Train: 0.4420 | Val: 0.4512
+Epoch 40/100 | Train: 0.4421 | Val: 0.4525
+Early stopping at epoch 43
+
+Results for w_o_Near_Repeat:
+  HitRate: 0.5302
+  PAI: 3.5910
+  Jaccard: 0.2213
+
+============================================================
+Training: w_o_Hypergraph
+Description: 移除超图注意力 (简化空间编码)
+============================================================
+Traceback (most recent call last):
+  File "D:\crime\experiments\ablation_study.py", line 547, in <module>
+    main()
+  File "D:\crime\experiments\ablation_study.py", line 515, in main
+    results = train_ablation_variant(
+  File "D:\crime\experiments\ablation_study.py", line 256, in train_ablation_variant
+    outputs = model(
+  File "D:\crime\crime_env\lib\site-packages\torch\nn\modules\module.py", line 1776, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "D:\crime\crime_env\lib\site-packages\torch\nn\modules\module.py", line 1787, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "D:\crime\experiments\ablation_study.py", line 168, in forward
+    self.base_model.hypergraph_attn = lambda x, H, **kwargs: (x, None)
+  File "D:\crime\crime_env\lib\site-packages\torch\nn\modules\module.py", line 2018, in __setattr__
+    raise TypeError(
+TypeError: cannot assign '__main__.AblationModel.forward.<locals>.<lambda>' as child module 'hypergraph_attn' (torch.nn.Module or None expected)
+
+
+
+# 清理之前的所有文件
+latexmk -C
+
+# 完整编译（会自动运行 pdflatex → bibtex → pdflatex × 2）
+latexmk -pdf main.tex
+
+# 强制编译（忽略图片缺失等非致命错误）
+latexmk -pdf -f main.tex

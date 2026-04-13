@@ -2,12 +2,8 @@
 data/raw/*.geojson
 data/raw/*.csv
 data/raw/*.tif
-data/processed/adj_crime_dynamic_gaussian.npy
-data/processed/X.npy
-data/processed/adj_crime_dynamic_od.npy
-data/processed/bike_*.npy
-data/processed/taxi_*.npy
-data/processed/dynamic_od_flow_1246.npy
+data/processed/*.npy
 OD_data/*
-
+crime_prediction_paper/*
+chicago_crime_data/*
 # Model checkpoints

@@ -13,7 +13,7 @@ from sentence_transformers import SentenceTransformer
 import requests
 from dataclasses import dataclass
 
-from src.env_criminology_kb import EnvironmentalCriminologyKB, KnowledgeEntry
+from env_criminology_kb import EnvironmentalCriminologyKB, KnowledgeEntry
 
 
 @dataclass

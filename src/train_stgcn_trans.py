@@ -73,8 +73,20 @@ class LearnablePositionalEncoding(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, max_len, d_model) * 0.02)
 
     def forward(self, x):
-        # x: (B, T, H)
-        return x + self.pos_embed[:, :x.size(1), :]
+        """
+        x: (B, T, H) 或 (B, T, N, H)
+        """
+        if x.dim() == 3:
+            # (B, T, H)
+            return x + self.pos_embed[:, :x.size(1), :]
+        elif x.dim() == 4:
+            # (B, T, N, H) - 在时间维度上加位置编码
+            B, T, N, H = x.shape
+            # pos_embed: (1, T, H) -> (1, T, 1, H) -> broadcast to (B, T, N, H)
+            pos = self.pos_embed[:, :T, :].unsqueeze(2)
+            return x + pos
+        else:
+            raise ValueError(f"Unsupported input dimension: {x.dim()}")
 
 
 # ================================
@@ -99,9 +111,16 @@ class CausalTemporalAttention(nn.Module):
 
     def forward(self, x, return_attn=False):
         """
-        x: (B, T, H)
+        x: (B, T, H) or (B, T, N, H)
         """
-        T = x.size(1)
+        # 处理4D输入 (B, T, N, H) -> (B*N, T, H)
+        if x.dim() == 4:
+            B, T, N, H = x.shape
+            x_reshaped = x.permute(0, 2, 1, 3).reshape(B * N, T, H)
+        else:
+            B, T, H = x.shape
+            N = None
+            x_reshaped = x
 
         # 因果mask: 上三角为 -inf
         causal_mask = torch.triu(
@@ -110,14 +129,18 @@ class CausalTemporalAttention(nn.Module):
         )
 
         # 自注意力
-        residual = x
-        x = self.norm(x)
-        x, attn_weights = self.attention(x, x, x, attn_mask=causal_mask)
-        x = self.dropout(x) + residual
+        residual = x_reshaped
+        x_norm = self.norm(x_reshaped)
+        x_out, attn_weights = self.attention(x_norm, x_norm, x_norm, attn_mask=causal_mask)
+        x_out = self.dropout(x_out) + residual
+
+        # 如果输入是4D，reshape回 (B, T, N, H)
+        if N is not None:
+            x_out = x_out.reshape(B, N, T, H).permute(0, 2, 1, 3)
 
         if return_attn:
-            return x, attn_weights
-        return x
+            return x_out, attn_weights
+        return x_out
 
 
 class TemporalTransformerBlock(nn.Module):
@@ -344,45 +367,69 @@ class HypergraphAttention(nn.Module):
     def forward(self, x, H_matrix, return_attn=False):
         """
         x: (B, N, H)
-        H_matrix: (N, num_hyperedges) - 超图关联矩阵
+        H_matrix: (N, N) - 超图邻接矩阵 (clique expansion)
         """
-        # 将超图转换为常规图的邻接矩阵: A = H @ H^T
-        A_hyper = H_matrix @ H_matrix.T
-        A_hyper = A_hyper / (A_hyper.sum(dim=-1, keepdim=True) + 1e-6)
+        # H_matrix 已经是超图的邻接矩阵 (通过 generate_hypergraph_matrix 生成)
+        # 直接用于空间注意力
+        A_hyper = H_matrix / (H_matrix.sum(dim=-1, keepdim=True) + 1e-6)
 
         return self.spatial_attn(x, A=A_hyper, return_attn=return_attn)
 
 
 # ================================
-# 8. 语义门控融合模块 (创新点)
+# 8. 自适应专家融合模块 (保守改进方案)
 # ================================
-class SemanticGatedFusion(nn.Module):
+class AdaptiveExpertFusion(nn.Module):
     """
-    语义特征门控融合模块
-    - 自适应调节语义嵌入与原始静态特征的融合比例
-    - 相比简单拼接，更灵活地利用LLM增强语义
-    - 计算开销小：仅增加一个门控网络
+    自适应专家融合模块 (Adaptive Expert Fusion)
+
+    核心创新：根据环境复杂度动态选择增强级别
+    - 环境复杂度评估：基于功能混合度、异质性等指标
+    - 软路由机制：连续权重而非硬划分
+    - 三层专家：基础编码 / 语义增强 / CPTED知识约束
+
+    优势：
+    1. 避免基于犯罪密度的标签泄漏
+    2. 端到端可训练，无需人工阈值
+    3. 提供可解释的复杂度分数
     """
 
     def __init__(self, static_dim, semantic_dim, hidden_dim, dropout=0.1):
         super().__init__()
+        self.hidden_dim = hidden_dim
 
-        # 语义特征投影
-        self.semantic_proj = nn.Sequential(
-            nn.Linear(semantic_dim, hidden_dim),
-            nn.LayerNorm(hidden_dim),
-            nn.GELU()
+        # ========== 环境复杂度评估器（软路由）==========
+        # 计算功能混合度、异质性等复杂度指标
+        self.complexity_scorer = nn.Sequential(
+            nn.Linear(static_dim, hidden_dim // 2),
+            nn.LayerNorm(hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+            nn.Sigmoid()  # 输出0-1的复杂度分数
         )
 
-        # 原始静态特征投影
-        self.static_proj = nn.Sequential(
+        # ========== 三层专家 ==========
+
+        # Expert 0: 基础编码器（简单环境）
+        self.basic_encoder = nn.Sequential(
             nn.Linear(static_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
             nn.GELU()
         )
 
-        # 门控网络：根据两个输入决定融合比例
-        self.gate_net = nn.Sequential(
+        # Expert 1: 语义增强编码器（中等复杂度）
+        self.semantic_proj = nn.Sequential(
+            nn.Linear(semantic_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+        self.static_proj = nn.Sequential(
+            nn.Linear(static_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+        self.semantic_gate = nn.Sequential(
             nn.Linear(hidden_dim * 2, hidden_dim),
             nn.GELU(),
             nn.Dropout(dropout),
@@ -390,39 +437,113 @@ class SemanticGatedFusion(nn.Module):
             nn.Sigmoid()
         )
 
-        # 输出投影
-        self.output_proj = nn.Linear(hidden_dim * 2, hidden_dim)
+        # Expert 2: CPTED知识增强（高复杂度环境）
+        self.cpted_scorer = nn.Sequential(
+            nn.Linear(static_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Linear(hidden_dim // 2, 4),  # 4个CPTED维度
+            nn.Sigmoid()
+        )
+        self.cpted_fusion = nn.Sequential(
+            nn.Linear(hidden_dim + 4, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU()
+        )
+
+        # ========== 输出投影 ==========
+        self.output_proj = nn.Linear(hidden_dim, hidden_dim)
         self.norm = nn.LayerNorm(hidden_dim)
         self.dropout = nn.Dropout(dropout)
+
+    def compute_cpted_scores(self, x_static):
+        """
+        计算CPTED四个维度的得分
+
+        x_static包含：POI、道路、照明、绿地、摄像头等
+
+        Returns: (B, N, 4) - [自然监护, 入口控制, 领域强化, 活动支持]
+        """
+        # 从静态特征中提取相关维度（假设特定索引）
+        # 这里简化处理，实际应根据特征定义精确计算
+
+        # 自然监护：照明 + 摄像头 + 可见性
+        # 入口控制：道路密度
+        # 领域强化：土地利用纯度
+        # 活动支持：商业POI密度
+
+        cpted_raw = self.cpted_scorer(x_static)  # (B, N, 4)
+
+        return cpted_raw
 
     def forward(self, x_static, x_semantic):
         """
         x_static: (B, N, F_s) 原始静态特征
         x_semantic: (N, D) 或 (B, N, D) LLM语义嵌入
 
-        返回: (B, N, H) 融合后的特征
+        返回:
+            - H_out: (B, N, H) 融合后的特征
+            - aux_info: dict 包含可解释性信息
         """
+        B, N, F_s = x_static.shape
+
         # 处理语义嵌入维度
         if x_semantic.dim() == 2:
-            x_semantic = x_semantic.unsqueeze(0).expand(x_static.size(0), -1, -1)
+            x_semantic = x_semantic.unsqueeze(0).expand(B, -1, -1)
 
-        # 投影到统一空间
-        H_static = self.static_proj(x_static)      # (B, N, H)
-        H_semantic = self.semantic_proj(x_semantic) # (B, N, H)
+        # ========== Step 1: 评估环境复杂度 ==========
+        complexity = self.complexity_scorer(x_static)  # (B, N, 1)
 
-        # 计算门控权重
-        concat = torch.cat([H_static, H_semantic], dim=-1)  # (B, N, 2H)
-        gate = self.gate_net(concat)  # (B, N, 1)
+        # 软路由权重计算
+        # 复杂度接近0 -> 主要用Expert 0
+        # 复杂度中等 -> 主要用Expert 1
+        # 复杂度接近1 -> 主要用Expert 2
+        w_basic = (1 - complexity) ** 2  # 低复杂度区域权重高
+        w_semantic = 2 * complexity * (1 - complexity)  # 中等复杂度最高
+        w_cpted = complexity ** 2  # 高复杂度区域权重高
 
-        # 门控融合
-        H_fused = gate * H_semantic + (1 - gate) * H_static  # (B, N, H)
+        # 归一化（确保和为1，数值稳定性）
+        w_sum = w_basic + w_semantic + w_cpted + 1e-8
+        w_basic = w_basic / w_sum
+        w_semantic = w_semantic / w_sum
+        w_cpted = w_cpted / w_sum
 
-        # 残差连接 + 输出投影
-        H_out = self.output_proj(torch.cat([H_fused, H_static], dim=-1))
+        # ========== Step 2: 三层专家计算 ==========
+
+        # Expert 0: 基础编码
+        h_basic = self.basic_encoder(x_static)  # (B, N, H)
+
+        # Expert 1: 语义增强
+        h_static_proj = self.static_proj(x_static)
+        h_semantic_proj = self.semantic_proj(x_semantic)
+        gate_sem = self.semantic_gate(
+            torch.cat([h_static_proj, h_semantic_proj], dim=-1)
+        )
+        h_semantic = gate_sem * h_semantic_proj + (1 - gate_sem) * h_static_proj
+
+        # Expert 2: CPTED知识增强
+        cpted_scores = self.compute_cpted_scores(x_static)  # (B, N, 4)
+        h_cpted_input = torch.cat([h_semantic, cpted_scores], dim=-1)
+        h_cpted = self.cpted_fusion(h_cpted_input)
+
+        # ========== Step 3: 软路由融合 ==========
+        h_fused = (w_basic * h_basic +
+                   w_semantic * h_semantic +
+                   w_cpted * h_cpted)  # (B, N, H)
+
+        # 输出投影
+        H_out = self.output_proj(h_fused)
         H_out = self.norm(H_out)
         H_out = self.dropout(H_out)
 
-        return H_out, gate  # 返回门控权重用于可解释性分析
+        # 可解释性信息
+        aux_info = {
+            'complexity_score': complexity,  # 环境复杂度 (B, N, 1)
+            'expert_weights': torch.cat([w_basic, w_semantic, w_cpted], dim=-1),  # (B, N, 3)
+            'semantic_gate': gate_sem,  # 语义门控值
+            'cpted_scores': cpted_scores  # CPTED四维度得分
+        }
+
+        return H_out, aux_info
 
 
 # ================================
@@ -494,6 +615,9 @@ class NearRepeatEffect(nn.Module):
 
         # 4. 可选：OD流调制 (人流影响犯罪传播)
         if OD_flow is not None:
+            # 确保OD_flow在同一设备上
+            if isinstance(OD_flow, torch.Tensor):
+                OD_flow = OD_flow.to(device)
             od_intensity = OD_flow.mean(dim=-1)  # (B, N)
             modulation = torch.sigmoid(od_intensity)
             near_repeat_effect = near_repeat_effect * (0.5 + 0.5 * modulation)
@@ -516,11 +640,12 @@ class NearRepeatEffect(nn.Module):
 # ================================
 class SpatioTemporalTransformer(nn.Module):
     """
-    完整的时空Transformer架构 (增强版)
+    完整的时空Transformer架构 (保守改进版)
     - 解耦静态/动态特征处理
     - 因果时间建模
     - 空间图注意力
-    - 语义门控融合 (创新点: LLM增强语义自适应融合)
+    - 自适应专家融合 (创新点: 环境复杂度感知的软路由)
+    - CPTED知识增强 (创新点: 环境设计知识约束)
     - 近重复效应建模 (创新点: 环境犯罪学理论驱动)
     - 交叉注意力融合
     - ZINB输出
@@ -536,7 +661,7 @@ class SpatioTemporalTransformer(nn.Module):
                  num_spatial_layers=2,
                  dropout=0.1,
                  num_nodes=None,
-                 use_semantic_gate=True,      # 是否使用语义门控融合
+                 use_semantic_gate=True,      # 是否使用自适应专家融合
                  use_near_repeat=True,        # 是否使用近重复效应
                  distance_matrix=None):       # 距离矩阵 (用于近重复效应)
         super().__init__()
@@ -548,19 +673,19 @@ class SpatioTemporalTransformer(nn.Module):
         self.static_dim = static_dim
         self.semantic_dim = semantic_dim
 
-        # ========== 语义门控融合 (创新点) ==========
+        # ========== 自适应专家融合 (保守改进创新点) ==========
         if self.use_semantic_gate:
-            self.semantic_gate_fusion = SemanticGatedFusion(
+            self.adaptive_fusion = AdaptiveExpertFusion(
                 static_dim=static_dim,
                 semantic_dim=semantic_dim,
                 hidden_dim=hidden_dim,
                 dropout=dropout
             )
             # 静态编码器输入维度
-            static_encoder_input = hidden_dim  # 门控融合输出
+            static_encoder_input = hidden_dim  # 融合输出
         else:
-            self.semantic_gate_fusion = None
-            # 无语义门控时，使用传统拼接
+            self.adaptive_fusion = None
+            # 无融合时，使用传统拼接
             static_encoder_input = static_dim + semantic_dim
 
         # ========== 静态特征编码器 ==========
@@ -669,7 +794,7 @@ class SpatioTemporalTransformer(nn.Module):
         crime_history: (B, T, N) - 历史犯罪序列 (用于近重复效应)
         """
         B, T, N, F = X.shape
-        semantic_gate_values = None
+        adaptive_info = None  # 自适应融合信息
         near_repeat_values = None
 
         # 分离静态和动态特征
@@ -679,15 +804,21 @@ class SpatioTemporalTransformer(nn.Module):
         X_static = X[:, -1, :, :static_idx]  # 取最后时刻的静态特征 (B, N, F_s)
         X_dynamic = X[:, :, :, static_idx:]   # 动态特征 (B, T, N, F_d)
 
-        # ========== 静态支路 (含语义门控融合) ==========
+        # ========== 静态支路 (含自适应专家融合) ==========
         if self.use_semantic_gate and semantic_embed is not None:
-            # 创新点: 语义门控融合
-            H_static_fused, semantic_gate_values = self.semantic_gate_fusion(X_static, semantic_embed)
+            # 保守改进创新点: 自适应专家融合
+            H_static_fused, adaptive_info = self.adaptive_fusion(X_static, semantic_embed)
             H_static = self.static_encoder(H_static_fused)
         else:
             # 传统拼接方式
             if semantic_embed is not None:
-                X_static = torch.cat([X_static, semantic_embed.unsqueeze(0).expand(B, -1, -1)], dim=-1)
+                if semantic_embed.dim() == 2:
+                    # (N, D) -> (B, N, D)
+                    semantic_expanded = semantic_embed.unsqueeze(0).expand(B, -1, -1)
+                else:
+                    # 已经是 (B, N, D)
+                    semantic_expanded = semantic_embed
+                X_static = torch.cat([X_static, semantic_expanded], dim=-1)
             H_static = self.static_encoder(X_static)
 
         # 空间传播 (静态)
@@ -756,8 +887,8 @@ class SpatioTemporalTransformer(nn.Module):
                 'static_feature': H_static,
                 'dynamic_feature': H_dynamic_agg,
                 'fused_feature': H_final,
-                'semantic_gate_values': semantic_gate_values,  # 语义门控权重 (可解释性)
-                'near_repeat_values': near_repeat_values       # 近重复效应强度 (可解释性)
+                'adaptive_info': adaptive_info,  # 自适应融合信息 (复杂度分数、专家权重)
+                'near_repeat_values': near_repeat_values       # 近重复效应强度
             }
             return pi, mu, theta, attention_dict
 
@@ -797,27 +928,47 @@ class SpatioTemporalTransformer(nn.Module):
         return analysis
 
     def get_feature_importance(self, X, A_spatial, A_distance, A_crime, A_hypergraph,
-                               OD=None, semantic_embed=None):
+                               OD=None, semantic_embed=None, epsilon=0.01):
         """
-        特征重要性分析 (基于梯度)
+        特征重要性分析 (基于输入扰动方法)
+
+        由于模型内部包含近重复效应等可能断开计算图的模块，
+        使用基于扰动的方法计算特征重要性，无需反向传播。
         """
         self.eval()
-        X = X.clone().requires_grad_(True)
 
-        pi, mu, theta, _, _ = self.forward(
-            X, A_spatial, A_distance, A_crime, A_hypergraph, OD, semantic_embed
-        )
+        # 确保输入是tensor
+        if not isinstance(X, torch.Tensor):
+            X = torch.tensor(X, dtype=torch.float32, device=A_spatial.device)
+        else:
+            X = X.to(A_spatial.device)
 
-        # 使用期望犯罪数作为目标
-        pred = (1 - pi) * mu
-        pred_sum = pred.sum()
+        with torch.no_grad():
+            # 原始预测
+            outputs_orig = self.forward(X, A_spatial, A_distance, A_crime,
+                                        A_hypergraph, OD, semantic_embed)
+            pi_orig, mu_orig = outputs_orig[0], outputs_orig[1]
+            pred_orig = ((1 - pi_orig) * mu_orig).sum().item()
 
-        # 计算梯度
-        pred_sum.backward()
+            print(f"Computing feature importance for {X.shape[-1]} features...")
 
-        # 梯度绝对值作为重要性
-        importance = X.grad.abs().mean(dim=(0, 1, 2)).cpu().numpy()
+            # 对每个特征维度进行扰动
+            importance = np.zeros(X.shape[-1])
+            for i in range(X.shape[-1]):
+                if i % 10 == 0:
+                    print(f"  Feature {i}/{X.shape[-1]}...")
 
+                X_perturbed = X.clone()
+                X_perturbed[..., i] += epsilon
+
+                outputs_perturbed = self.forward(X_perturbed, A_spatial, A_distance,
+                                                 A_crime, A_hypergraph, OD, semantic_embed)
+                pi_new, mu_new = outputs_perturbed[0], outputs_perturbed[1]
+                pred_new = ((1 - pi_new) * mu_new).sum().item()
+
+                importance[i] = abs(pred_new - pred_orig)
+
+        print("Feature importance computation complete!")
         return importance
 
 
@@ -906,6 +1057,7 @@ def train_model(model, train_loader, val_loader,
             X_batch = X_batch.to(device)
             Y_batch = Y_batch.to(device)
             A_crime_batch = A_crime_batch.to(device)
+            OD_batch = OD_batch.to(device)
 
             # 处理NaN
             if torch.isnan(A_crime_batch).any():
@@ -951,6 +1103,7 @@ def train_model(model, train_loader, val_loader,
                 X_batch = X_batch.to(device)
                 Y_batch = Y_batch.to(device)
                 A_crime_batch = A_crime_batch.to(device)
+                OD_batch = OD_batch.to(device)
 
                 if torch.isnan(A_crime_batch).any():
                     A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
@@ -1031,7 +1184,11 @@ def calculate_advanced_metrics(y_true, y_pred, k_percent=0.1):
 
     jaccard = jaccard_sum / len(y_true)
 
-    return hit_rate, pai, jaccard
+    return {
+        "HitRate": hit_rate,
+        "PAI": pai,
+        "Jaccard": jaccard
+    }
 
 
 def test_model(model, test_loader, A_spatial, A_distance, A_hypergraph, device, semantic_embed=None):
@@ -1044,6 +1201,7 @@ def test_model(model, test_loader, A_spatial, A_distance, A_hypergraph, device, 
             X_batch = X_batch.to(device)
             Y_batch = Y_batch.to(device)
             A_crime_batch = A_crime_batch.to(device)
+            OD_batch = OD_batch.to(device)
 
             if torch.isnan(A_crime_batch).any():
                 A_crime_batch = torch.nan_to_num(A_crime_batch, nan=0.0)
@@ -1070,7 +1228,10 @@ def test_model(model, test_loader, A_spatial, A_distance, A_hypergraph, device, 
     mae = mean_absolute_error(Y_test_all.flatten(), pred_test.flatten())
 
     # 实战指标
-    hit_rate, pai, jaccard = calculate_advanced_metrics(Y_test_all, pred_test)
+    metrics = calculate_advanced_metrics(Y_test_all, pred_test)
+    hit_rate = metrics["HitRate"]
+    pai = metrics["PAI"]
+    jaccard = metrics["Jaccard"]
 
     print("\n" + "="*50)
     print("测试结果:")
@@ -1115,10 +1276,14 @@ if __name__ == "__main__":
     A_hypergraph = np.load("data/processed/adj_hypergraph.npy")
 
     # 加载语义嵌入 (可选)
-    semantic_embed = None
-    if os.path.exists("data/processed/semantic_embedding.npy"):
-        semantic_embed = np.load("data/processed/semantic_embedding.npy")
-        print(f"语义嵌入: {semantic_embed.shape}")
+    # 加载RAG语义嵌入
+    semantic_embed_path = "data/processed/semantic_embedding_rag.npy"
+    if os.path.exists(semantic_embed_path):
+        semantic_embed = np.load(semantic_embed_path)
+        print(f"Loaded RAG semantic embedding: {semantic_embed.shape}")
+    else:
+        # 回退到基础版本
+        semantic_embed = np.load("data/processed/semantic_embedding_v2.npy")
 
     # ========== 构建窗口 ==========
     window = 30

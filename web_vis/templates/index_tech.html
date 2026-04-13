@@ -1,0 +1,1077 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CHICAGO CRIME PREDICTION SYSTEM // ACR-ST v2.0</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <!-- Bootstrap CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <style>
+        :root {
+            --neon-blue: #00f3ff;
+            --neon-purple: #bc13fe;
+            --neon-green: #00ff88;
+            --neon-red: #ff2a6d;
+            --dark-bg: #0a0e27;
+            --panel-bg: rgba(16, 24, 64, 0.7);
+            --border-glow: 0 0 20px rgba(0, 243, 255, 0.3);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Courier New', monospace;
+            background: var(--dark-bg);
+            color: #fff;
+            overflow-x: hidden;
+            min-height: 100vh;
+        }
+
+        /* Background Animation */
+        .bg-grid {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image:
+                linear-gradient(rgba(0, 243, 255, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(0, 243, 255, 0.03) 1px, transparent 1px);
+            background-size: 50px 50px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .bg-glow {
+            position: fixed;
+            top: -50%;
+            left: -50%;
+            width: 200%;
+            height: 200%;
+            background: radial-gradient(circle at 30% 50%, rgba(0, 243, 255, 0.1) 0%, transparent 50%),
+                        radial-gradient(circle at 70% 50%, rgba(188, 19, 254, 0.1) 0%, transparent 50%);
+            animation: pulse 8s ease-in-out infinite;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 0.5; transform: scale(1); }
+            50% { opacity: 0.8; transform: scale(1.1); }
+        }
+
+        /* Header */
+        .tech-header {
+            position: relative;
+            background: linear-gradient(180deg, rgba(0, 243, 255, 0.1) 0%, transparent 100%);
+            border-bottom: 2px solid var(--neon-blue);
+            padding: 20px 0;
+            z-index: 10;
+        }
+
+        .tech-header h1 {
+            font-size: 1.8rem;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            text-shadow: 0 0 20px var(--neon-blue);
+            margin: 0;
+        }
+
+        .tech-header h1::before {
+            content: '▶ ';
+            color: var(--neon-blue);
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0; }
+        }
+
+        .status-indicator {
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            font-size: 0.8rem;
+            color: var(--neon-green);
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            background: var(--neon-green);
+            border-radius: 50%;
+            box-shadow: 0 0 10px var(--neon-green);
+            animation: pulse-dot 2s infinite;
+        }
+
+        @keyframes pulse-dot {
+            0%, 100% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 0.7; }
+        }
+
+        /* Glass Panels */
+        .glass-panel {
+            background: var(--panel-bg);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(0, 243, 255, 0.3);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: var(--border-glow);
+            position: relative;
+            overflow: hidden;
+            z-index: 5;
+        }
+
+        .glass-panel::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, transparent, var(--neon-blue), transparent);
+            animation: scan 3s linear infinite;
+        }
+
+        @keyframes scan {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        .panel-title {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            color: var(--neon-blue);
+            margin-bottom: 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .panel-title::after {
+            content: '';
+            flex: 1;
+            height: 1px;
+            background: linear-gradient(90deg, var(--neon-blue), transparent);
+        }
+
+        /* Map Container */
+        #map {
+            height: 75vh;
+            border-radius: 10px;
+            border: 2px solid rgba(0, 243, 255, 0.3);
+            box-shadow: inset 0 0 30px rgba(0, 243, 255, 0.1),
+                        0 0 30px rgba(0, 243, 255, 0.2);
+            z-index: 5;
+        }
+
+        /* Custom Form Controls */
+        .tech-select {
+            background: rgba(0, 0, 0, 0.5);
+            border: 1px solid var(--neon-blue);
+            color: var(--neon-blue);
+            padding: 10px 15px;
+            border-radius: 5px;
+            width: 100%;
+            font-family: 'Courier New', monospace;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .tech-select:hover, .tech-select:focus {
+            background: rgba(0, 243, 255, 0.1);
+            box-shadow: 0 0 15px rgba(0, 243, 255, 0.3);
+            outline: none;
+        }
+
+        .tech-btn {
+            background: transparent;
+            border: 1px solid var(--neon-blue);
+            color: var(--neon-blue);
+            padding: 10px 20px;
+            border-radius: 5px;
+            font-family: 'Courier New', monospace;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            cursor: pointer;
+            transition: all 0.3s;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .tech-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(0, 243, 255, 0.3), transparent);
+            transition: left 0.5s;
+        }
+
+        .tech-btn:hover::before {
+            left: 100%;
+        }
+
+        .tech-btn:hover {
+            background: rgba(0, 243, 255, 0.1);
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.4);
+        }
+
+        .tech-btn.danger {
+            border-color: var(--neon-red);
+            color: var(--neon-red);
+        }
+
+        .tech-btn.danger:hover {
+            background: rgba(255, 42, 109, 0.1);
+            box-shadow: 0 0 20px rgba(255, 42, 109, 0.4);
+        }
+
+        .tech-btn.success {
+            border-color: var(--neon-green);
+            color: var(--neon-green);
+        }
+
+        .tech-btn.success:hover {
+            background: rgba(0, 255, 136, 0.1);
+            box-shadow: 0 0 20px rgba(0, 255, 136, 0.4);
+        }
+
+        /* Stats Display */
+        .stat-box {
+            background: rgba(0, 0, 0, 0.3);
+            border: 1px solid rgba(0, 243, 255, 0.2);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+            position: relative;
+        }
+
+        .stat-box::after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: bold;
+            color: var(--neon-blue);
+            text-shadow: 0 0 10px var(--neon-blue);
+        }
+
+        .stat-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: rgba(255, 255, 255, 0.7);
+            margin-top: 5px;
+        }
+
+        /* Risk Level Colors */
+        .risk-very-high {
+            background: linear-gradient(135deg, rgba(255, 42, 109, 0.3), rgba(255, 42, 109, 0.1));
+            border-left: 4px solid var(--neon-red);
+        }
+
+        .risk-high {
+            background: linear-gradient(135deg, rgba(255, 165, 0, 0.3), rgba(255, 165, 0, 0.1));
+            border-left: 4px solid #ffa500;
+        }
+
+        .risk-medium {
+            background: linear-gradient(135deg, rgba(255, 255, 0, 0.2), rgba(255, 255, 0, 0.05));
+            border-left: 4px solid #ffff00;
+        }
+
+        .risk-low {
+            background: linear-gradient(135deg, rgba(0, 255, 136, 0.2), rgba(0, 255, 136, 0.05));
+            border-left: 4px solid var(--neon-green);
+        }
+
+        /* Hotspot List */
+        .hotspot-item {
+            padding: 12px;
+            margin: 8px 0;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 0.85rem;
+        }
+
+        .hotspot-item:hover {
+            transform: translateX(5px);
+            box-shadow: 0 0 20px rgba(0, 243, 255, 0.3);
+        }
+
+        /* Progress Bar */
+        .tech-progress {
+            height: 25px;
+            background: rgba(0, 0, 0, 0.5);
+            border-radius: 12px;
+            overflow: hidden;
+            border: 1px solid rgba(0, 243, 255, 0.2);
+        }
+
+        .tech-progress-bar {
+            height: 100%;
+            transition: width 0.5s ease;
+            position: relative;
+        }
+
+        .tech-progress-bar::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+            animation: shimmer 2s infinite;
+        }
+
+        @keyframes shimmer {
+            0% { transform: translateX(-100%); }
+            100% { transform: translateX(100%); }
+        }
+
+        /* Loading Overlay */
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: var(--dark-bg);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 9999;
+            flex-direction: column;
+        }
+
+        .loading-text {
+            color: var(--neon-blue);
+            font-size: 1.2rem;
+            letter-spacing: 3px;
+            margin-top: 20px;
+            animation: blink 1s infinite;
+        }
+
+        .loading-bar {
+            width: 300px;
+            height: 4px;
+            background: rgba(0, 243, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 20px;
+        }
+
+        .loading-bar-inner {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, var(--neon-blue), var(--neon-purple));
+            animation: load 2s ease-in-out infinite;
+        }
+
+        @keyframes load {
+            0% { width: 0%; left: 0; }
+            50% { width: 100%; left: 0; }
+            100% { width: 0%; left: 100%; }
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: rgba(0, 0, 0, 0.3);
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--neon-blue);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--neon-purple);
+        }
+
+        /* Legend */
+        .legend-item {
+            display: flex;
+            align-items: center;
+            margin: 8px 0;
+            font-size: 0.8rem;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            margin-right: 10px;
+            border-radius: 3px;
+            box-shadow: 0 0 10px currentColor;
+        }
+
+        /* Corner Decorations */
+        .corner {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid var(--neon-blue);
+        }
+
+        .corner-tl { top: 0; left: 0; border-right: none; border-bottom: none; }
+        .corner-tr { top: 0; right: 0; border-left: none; border-bottom: none; }
+        .corner-bl { bottom: 0; left: 0; border-right: none; border-top: none; }
+        .corner-br { bottom: 0; right: 0; border-left: none; border-top: none; }
+    </style>
+</head>
+<body>
+    <!-- Background Effects -->
+    <div class="bg-grid"></div>
+    <div class="bg-glow"></div>
+
+    <!-- Loading Overlay -->
+    <div id="loading" class="loading-overlay">
+        <div style="font-size: 3rem; color: var(--neon-blue);">
+            <i class="fas fa-circle-nodes"></i>
+        </div>
+        <div class="loading-text">SYSTEM INITIALIZING...</div>
+        <div class="loading-bar">
+            <div class="loading-bar-inner"></div>
+        </div>
+        <div style="margin-top: 10px; font-size: 0.8rem; color: rgba(255,255,255,0.5);">
+            LOADING PREDICTION MODEL // ACR-ST v2.0
+        </div>
+    </div>
+
+    <!-- Header -->
+    <header class="tech-header">
+        <div class="container-fluid px-4">
+            <div class="row align-items-center">
+                <div class="col-md-8">
+                    <h1>CHICAGO CRIME PREDICTION SYSTEM</h1>
+                    <div style="font-size: 0.75rem; color: rgba(255,255,255,0.6); letter-spacing: 2px;">
+                        ADAPTIVE ENVIRONMENT-COMPLEXITY ROUTING // SPATIO-TEMPORAL TRANSFORMER v2.0
+                    </div>
+                </div>
+                <div class="col-md-4 text-end">
+                    <div class="status-indicator">
+                        <span class="status-dot"></span>
+                        <span>MODEL ONLINE // HIT RATE 53.4% // PAI 3.61</span>
+                    </div>
+                    <div style="font-size: 0.7rem; color: rgba(255,255,255,0.4); margin-top: 5px;">
+                        <i class="far fa-clock"></i> <span id="currentTime">--:--:--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </header>
+
+    <div class="container-fluid px-4 py-3" style="position: relative; z-index: 5;">
+        <div class="row">
+            <!-- Left Panel -->
+            <div class="col-md-3">
+                <!-- Date Control -->
+                <div class="glass-panel">
+                    <div class="corner corner-tl"></div>
+                    <div class="corner corner-tr"></div>
+                    <div class="corner corner-bl"></div>
+                    <div class="corner corner-br"></div>
+
+                    <div class="panel-title">
+                        <i class="fas fa-calendar-alt"></i> TEMPORAL CONTROL
+                    </div>
+
+                    <select id="dateSelect" class="tech-select mb-3">
+                        <option value="">>> SELECT DATE <<</option>
+                    </select>
+
+                    <div class="d-grid gap-2">
+                        <button id="showAllBtn" class="tech-btn">
+                            <i class="fas fa-globe"></i> ALL ZONES
+                        </button>
+                        <button id="showHotspotsBtn" class="tech-btn danger">
+                            <i class="fas fa-crosshairs"></i> CRITICAL ZONES (TOP 10%)
+                        </button>
+                        <button id="animateBtn" class="tech-btn success">
+                            <i class="fas fa-play"></i> SEQUENCE PLAYBACK
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Statistics -->
+                <div class="glass-panel">
+                    <div class="panel-title">
+                        <i class="fas fa-chart-line"></i> REAL-TIME METRICS
+                    </div>
+
+                    <div class="row g-2" id="statsContent">
+                        <div class="col-6">
+                            <div class="stat-box">
+                                <div class="stat-value" id="statTotal">--</div>
+                                <div class="stat-label">EXPECTED INCIDENTS</div>
+                            </div>
+                        </div>
+                        <div class="col-6">
+                            <div class="stat-box">
+                                <div class="stat-value" id="statHotspots">--</div>
+                                <div class="stat-label">CRITICAL ZONES</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-3">
+                        <div class="d-flex justify-content-between mb-1" style="font-size: 0.7rem;">
+                            <span style="color: var(--neon-red);">CRITICAL</span>
+                            <span id="countCritical">0</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-1" style="font-size: 0.7rem;">
+                            <span style="color: #ffa500;">HIGH</span>
+                            <span id="countHigh">0</span>
+                        </div>
+                        <div class="d-flex justify-content-between mb-1" style="font-size: 0.7rem;">
+                            <span style="color: #ffff00;">MODERATE</span>
+                            <span id="countModerate">0</span>
+                        </div>
+                        <div class="d-flex justify-content-between" style="font-size: 0.7rem;">
+                            <span style="color: var(--neon-green);">LOW</span>
+                            <span id="countLow">0</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Legend -->
+                <div class="glass-panel">
+                    <div class="panel-title">
+                        <i class="fas fa-info-circle"></i> THREAT LEVELS
+                    </div>
+
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ff2a6d; box-shadow: 0 0 10px #ff2a6d;"></div>
+                        <span>CRITICAL [E(Y) > 2.0]</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffa500; box-shadow: 0 0 10px #ffa500;"></div>
+                        <span>HIGH [1.0 - 2.0]</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #ffff00; box-shadow: 0 0 10px #ffff00;"></div>
+                        <span>MODERATE [0.5 - 1.0]</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background: #00ff88; box-shadow: 0 0 10px #00ff88;"></div>
+                        <span>LOW [< 0.5]</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Center: Map -->
+            <div class="col-md-6">
+                <div class="glass-panel" style="padding: 5px;">
+                    <div id="map"></div>
+                </div>
+            </div>
+
+            <!-- Right Panel -->
+            <div class="col-md-3">
+                <!-- Hotspots -->
+                <div class="glass-panel">
+                    <div class="panel-title">
+                        <i class="fas fa-exclamation-triangle"></i> PRIORITY TARGETS
+                    </div>
+
+                    <div id="hotspotsList" style="max-height: 45vh; overflow-y: auto;">
+                        <div style="text-align: center; color: rgba(255,255,255,0.3); padding: 20px;">
+                            <i class="fas fa-satellite-dish" style="font-size: 2rem;"></i>
+                            <p style="margin-top: 10px; font-size: 0.8rem;">SELECT DATE TO DISPLAY TARGETS</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Grid Recommendations (New) -->
+                <div class="glass-panel" id="recommendationsPanel" style="display: none;">
+                    <div class="panel-title">
+                        <i class="fas fa-shield-alt"></i> GRID RECOMMENDATIONS
+                    </div>
+
+                    <div id="recommendationsContent" style="font-size: 0.75rem; line-height: 1.6; max-height: 35vh; overflow-y: auto;">
+                        <!-- Dynamic content -->
+                    </div>
+                </div>
+
+                <!-- Policy -->
+                <div class="glass-panel">
+                    <div class="panel-title">
+                        <i class="fas fa-microchip"></i> TACTICAL ADVISORY
+                    </div>
+
+                    <div id="policyContent">
+                        <div style="font-size: 0.75rem; line-height: 1.6;">
+                            <div style="color: var(--neon-blue); margin-bottom: 10px;">
+                                <i class="fas fa-robot"></i> AI-GENERATED RECOMMENDATIONS:
+                            </div>
+                            <p style="color: rgba(255,255,255,0.6);">
+                                System ready. Select temporal parameters to generate tactical deployment strategies.
+                                <strong style="color: var(--neon-green);">Click on any grid to view specific recommendations.</strong>
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Model Info -->
+                <div class="glass-panel" style="background: rgba(0,0,0,0.5);">
+                    <div style="font-size: 0.65rem; color: rgba(255,255,255,0.4); text-align: center;">
+                        <div>ACR-ST v2.0 // PYTORCH 2.0 // CUDA 11.8</div>
+                        <div style="margin-top: 5px;">GRIDS: 1246 // WINDOW: 30D // PREDICTION: 7D</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <script>
+        // [保持原有的JavaScript逻辑不变]
+        let map, gridLayer, predictions, gridData;
+        let currentDate = null;
+        let isAnimating = false;
+
+        const colorScale = {
+            'very_high': '#ff2a6d',
+            'high': '#ffa500',
+            'medium': '#ffff00',
+            'low': '#00ff88'
+        };
+
+        function initMap() {
+            map = L.map('map', {
+                center: [41.8781, -87.6298],
+                zoom: 11,
+                zoomControl: false
+            });
+
+            // Dark themed tiles
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+                subdomains: 'abcd',
+                maxZoom: 19
+            }).addTo(map);
+
+            L.control.zoom({ position: 'bottomright' }).addTo(map);
+        }
+
+        function updateClock() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = now.toLocaleTimeString();
+        }
+        setInterval(updateClock, 1000);
+        updateClock();
+
+        // [其他原有函数保持不变...]
+        async function loadData() {
+            try {
+                const gridResponse = await fetch('/api/grid');
+                gridData = await gridResponse.json();
+
+                const datesResponse = await fetch('/api/predictions');
+                predictions = await datesResponse.json();
+
+                const dateSelect = document.getElementById('dateSelect');
+                dateSelect.innerHTML = '<option value="">>> SELECT DATE <<</option>';
+                predictions.dates.forEach(date => {
+                    const option = document.createElement('option');
+                    option.value = date;
+                    option.textContent = `>> ${date} <<`;
+                    dateSelect.appendChild(option);
+                });
+
+                if (predictions.dates.length > 0) {
+                    currentDate = predictions.dates[0];
+                    dateSelect.value = currentDate;
+                    await loadPrediction(currentDate);
+                }
+
+                document.getElementById('loading').style.display = 'none';
+            } catch (error) {
+                console.error('Error loading data:', error);
+                document.querySelector('.loading-text').textContent = 'ERROR: DATA CONNECTION FAILED';
+            }
+        }
+
+        async function loadPrediction(date) {
+            try {
+                currentDate = date;
+                const response = await fetch(`/api/prediction/${date}`);
+                const data = await response.json();
+                updateMap(data);
+                updateStats(data);
+                await updateHotspots(date);
+                updatePolicy(data);
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function updateMap(predictionData) {
+            if (gridLayer) map.removeLayer(gridLayer);
+
+            gridLayer = L.geoJSON(gridData, {
+                style: function(feature) {
+                    const gridId = feature.properties.grid_id;
+                    const riskLevel = predictionData.risk_levels[gridId];
+                    return {
+                        fillColor: colorScale[riskLevel] || '#00ff88',
+                        weight: 1,
+                        opacity: 0.5,
+                        color: colorScale[riskLevel] || '#00ff88',
+                        fillOpacity: 0.4
+                    };
+                },
+                onEachFeature: function(feature, layer) {
+                    const gridId = feature.properties.grid_id;
+                    const riskScore = predictionData.risk_scores[gridId];
+                    const riskLevel = predictionData.risk_levels[gridId];
+
+                    layer.bindPopup(`
+                        <div style="background: #0a0e27; color: #00f3ff; padding: 10px; border: 1px solid #00f3ff; font-family: monospace;">
+                            <div style="border-bottom: 1px solid #00f3ff; padding-bottom: 5px; margin-bottom: 10px;">
+                                <strong>GRID ID: ${gridId}</strong>
+                            </div>
+                            <div>THREAT LEVEL: <span style="color: ${colorScale[riskLevel]}; text-transform: uppercase;">${riskLevel}</span></div>
+                            <div>RISK SCORE: ${riskScore.toFixed(4)}</div>
+                            <div>EXPECTED: ${riskScore.toFixed(2)} INCIDENTS</div>
+                        </div>
+                    `);
+
+                    layer.on({
+                        mouseover: function(e) {
+                            e.target.setStyle({ weight: 3, opacity: 1, fillOpacity: 0.7 });
+                        },
+                        mouseout: function(e) {
+                            e.target.setStyle({ weight: 1, opacity: 0.5, fillOpacity: 0.4 });
+                        },
+                        click: function(e) {
+                            loadGridRecommendations(gridId);
+                        }
+                    });
+                }
+            }).addTo(map);
+
+            map.fitBounds(gridLayer.getBounds());
+        }
+
+        function updateStats(data) {
+            document.getElementById('statTotal').textContent = data.total_expected.toFixed(1);
+            document.getElementById('statHotspots').textContent = data.top_10_percent.length;
+
+            document.getElementById('countCritical').textContent = data.statistics.very_high;
+            document.getElementById('countHigh').textContent = data.statistics.high;
+            document.getElementById('countModerate').textContent = data.statistics.medium;
+            document.getElementById('countLow').textContent = data.statistics.low;
+        }
+
+        async function updateHotspots(date) {
+            try {
+                const response = await fetch(`/api/prediction/${date}/hotspots`);
+                const data = await response.json();
+
+                let html = '';
+                data.hotspots.slice(0, 15).forEach((spot, index) => {
+                    const riskClass = spot.risk_level === 'very_high' ? 'risk-very-high' :
+                                     spot.risk_level === 'high' ? 'risk-high' :
+                                     spot.risk_level === 'medium' ? 'risk-medium' : 'risk-low';
+
+                    html += `
+                        <div class="hotspot-item ${riskClass}" onclick="flyToGrid(${spot.lat}, ${spot.lon}); loadGridRecommendations(${spot.grid_id});">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <div>
+                                    <div style="font-size: 0.9rem; font-weight: bold;">
+                                        <i class="fas fa-map-marker-alt"></i> GRID ${spot.grid_id}
+                                    </div>
+                                    <div style="font-size: 0.7rem; opacity: 0.8; margin-top: 3px;">
+                                        RISK: ${spot.risk_score.toFixed(3)} | ${spot.risk_level.toUpperCase()}
+                                    </div>
+                                </div>
+                                <div style="font-size: 1.2rem; font-weight: bold; opacity: 0.6;">
+                                    #${index + 1}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+
+                document.getElementById('hotspotsList').innerHTML = html;
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+
+        function updatePolicy(data) {
+            const vh = data.statistics.very_high;
+            const h = data.statistics.high;
+
+            let html = '<div style="font-size: 0.75rem; line-height: 1.8;">';
+
+            if (vh > 0) {
+                html += `
+                    <div style="border-left: 3px solid #ff2a6d; padding-left: 10px; margin-bottom: 10px; background: rgba(255,42,109,0.1); padding: 10px;">
+                        <div style="color: #ff2a6d; font-weight: bold; margin-bottom: 5px;">
+                            <i class="fas fa-radiation"></i> CRITICAL ALERT
+                        </div>
+                        <div>${vh} ZONES REQUIRING IMMEDIATE DEPLOYMENT</div>
+                        <div style="margin-top: 5px; opacity: 0.8;">>> 2 UNITS + FOOT PATROL // 2HR INTERVALS</div>
+                    </div>
+                `;
+            }
+
+            if (h > 0) {
+                html += `
+                    <div style="border-left: 3px solid #ffa500; padding-left: 10px; margin-bottom: 10px; background: rgba(255,165,0,0.1); padding: 10px;">
+                        <div style="color: #ffa500; font-weight: bold; margin-bottom: 5px;">
+                            <i class="fas fa-exclamation-circle"></i> HIGH PRIORITY
+                        </div>
+                        <div>${h} ZONES ELEVATED RISK STATUS</div>
+                        <div style="margin-top: 5px; opacity: 0.8;">>> 1 UNIT // 4HR INTERVALS</div>
+                    </div>
+                `;
+            }
+
+            html += `
+                <div style="border-left: 3px solid #00f3ff; padding-left: 10px; background: rgba(0,243,255,0.05); padding: 10px;">
+                    <div style="color: #00f3ff; font-weight: bold; margin-bottom: 5px;">
+                        <i class="fas fa-robot"></i> OPTIMAL STRATEGY
+                    </div>
+                    <div>DEPLOY 50% FORCE TO TOP 10% ZONES</div>
+                    <div style="margin-top: 5px; opacity: 0.8;">>> PROJECTED INTERCEPTION: 53.4%</div>
+                    <div style="margin-top: 5px; opacity: 0.8;">>> EFFICIENCY MULTIPLIER: 3.61x</div>
+                </div>
+            `;
+
+            html += '</div>';
+            document.getElementById('policyContent').innerHTML = html;
+        }
+
+        function flyToGrid(lat, lon) {
+            map.flyTo([lat, lon], 15, { duration: 1.5 });
+            const marker = L.circleMarker([lat, lon], {
+                radius: 15,
+                fillColor: '#00f3ff',
+                color: '#fff',
+                weight: 2,
+                fillOpacity: 0.8
+            }).addTo(map);
+            setTimeout(() => map.removeLayer(marker), 2000);
+        }
+
+        function showHotspotsOnly() {
+            if (!gridLayer || !currentDate) return;
+            fetch(`/api/prediction/${currentDate}`)
+                .then(r => r.json())
+                .then(data => {
+                    gridLayer.eachLayer(layer => {
+                        const gridId = layer.feature.properties.grid_id;
+                        layer.setStyle(data.top_10_percent.includes(gridId) ?
+                            { opacity: 1, fillOpacity: 0.7 } :
+                            { opacity: 0.1, fillOpacity: 0.05 }
+                        );
+                    });
+                });
+        }
+
+        function showAllGrids() {
+            if (!gridLayer) return;
+            gridLayer.eachLayer(layer => {
+                layer.setStyle({ opacity: 0.5, fillOpacity: 0.4 });
+            });
+        }
+
+        async function animateDates() {
+            if (isAnimating) {
+                isAnimating = false;
+                document.getElementById('animateBtn').innerHTML = '<i class="fas fa-play"></i> SEQUENCE PLAYBACK';
+                return;
+            }
+
+            isAnimating = true;
+            document.getElementById('animateBtn').innerHTML = '<i class="fas fa-pause"></i> PAUSE SEQUENCE';
+
+            for (let i = 0; i < predictions.dates.length && isAnimating; i++) {
+                const date = predictions.dates[i];
+                document.getElementById('dateSelect').value = date;
+                await loadPrediction(date);
+                await new Promise(r => setTimeout(r, 2000));
+            }
+
+            isAnimating = false;
+            document.getElementById('animateBtn').innerHTML = '<i class="fas fa-play"></i> SEQUENCE PLAYBACK';
+        }
+
+        document.getElementById('dateSelect').addEventListener('change', (e) => {
+            if (e.target.value) loadPrediction(e.target.value);
+        });
+        document.getElementById('showAllBtn').addEventListener('click', showAllGrids);
+        document.getElementById('showHotspotsBtn').addEventListener('click', showHotspotsOnly);
+        document.getElementById('animateBtn').addEventListener('click', animateDates);
+
+        async function loadGridRecommendations(gridId) {
+            try {
+                const response = await fetch(`/api/grid/${gridId}/recommendations`);
+                const data = await response.json();
+
+                if (data.error) {
+                    console.error('Error:', data.error);
+                    return;
+                }
+
+                // Show recommendations panel
+                document.getElementById('recommendationsPanel').style.display = 'block';
+
+                // Build recommendations HTML
+                let html = '';
+
+                // Header with risk level
+                const riskColor = data.risk_assessment.level === '极高' ? '#ff2a6d' :
+                                 data.risk_assessment.level === '高' ? '#ffa500' :
+                                 data.risk_assessment.level === '中等' ? '#ffff00' : '#00ff88';
+
+                html += `
+                    <div style="border-bottom: 1px solid rgba(0,243,255,0.3); padding-bottom: 10px; margin-bottom: 10px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <span style="font-size: 0.9rem; font-weight: bold;">GRID ${data.grid_id}</span>
+                            <span style="color: ${riskColor}; font-weight: bold;">${data.risk_assessment.level}</span>
+                        </div>
+                        <div style="font-size: 0.7rem; color: rgba(255,255,255,0.6); margin-top: 5px;">
+                            RISK: ${data.risk_assessment.score}
+                        </div>
+                    </div>
+                `;
+
+                // Diagnosis
+                html += `
+                    <div style="background: rgba(0,0,0,0.3); padding: 10px; border-radius: 5px; margin-bottom: 10px;">
+                        <div style="color: var(--neon-blue); font-size: 0.7rem; margin-bottom: 5px;">
+                            <i class="fas fa-stethoscope"></i> DIAGNOSIS
+                        </div>
+                        <div style="font-size: 0.75rem;">${data.risk_assessment.diagnosis}</div>
+                    </div>
+                `;
+
+                // Immediate Actions
+                if (data.immediate_actions && data.immediate_actions.length > 0) {
+                    html += `
+                        <div style="margin-bottom: 10px;">
+                            <div style="color: #ff2a6d; font-size: 0.7rem; margin-bottom: 5px;">
+                                <i class="fas fa-exclamation-triangle"></i> IMMEDIATE ACTIONS (24H)
+                            </div>
+                    `;
+                    data.immediate_actions.forEach((action, idx) => {
+                        html += `
+                            <div style="background: rgba(255,42,109,0.1); border-left: 2px solid #ff2a6d; padding: 8px; margin-bottom: 5px; border-radius: 0 5px 5px 0;">
+                                <div style="font-weight: bold; color: #ff2a6d;">${idx + 1}. ${action.action}</div>
+                                <div style="font-size: 0.7rem; color: rgba(255,255,255,0.8); margin-top: 3px;">${action.detail}</div>
+                                <div style="font-size: 0.65rem; color: rgba(255,255,255,0.5); margin-top: 3px;">
+                                    PRIORITY: ${action.priority} | COST: ${action.cost}
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                }
+
+                // Short-term Actions
+                if (data.short_term_actions && data.short_term_actions.length > 0) {
+                    html += `
+                        <div style="margin-bottom: 10px;">
+                            <div style="color: #ffa500; font-size: 0.7rem; margin-bottom: 5px;">
+                                <i class="fas fa-clock"></i> SHORT-TERM (1WEEK)
+                            </div>
+                    `;
+                    data.short_term_actions.slice(0, 3).forEach((action, idx) => {
+                        html += `
+                            <div style="background: rgba(255,165,0,0.1); border-left: 2px solid #ffa500; padding: 6px; margin-bottom: 4px; border-radius: 0 5px 5px 0; font-size: 0.7rem;">
+                                • ${action}
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                }
+
+                // Environmental Suggestions
+                if (data.environmental_suggestions && data.environmental_suggestions.focus_areas.length > 0) {
+                    html += `
+                        <div style="margin-bottom: 10px;">
+                            <div style="color: var(--neon-green); font-size: 0.7rem; margin-bottom: 5px;">
+                                <i class="fas fa-tree"></i> ENVIRONMENTAL IMPROVEMENTS
+                            </div>
+                    `;
+                    const focusNames = {
+                        'lighting': '照明改善',
+                        'surveillance': '监控增强',
+                        'greening': '绿化优化',
+                        'access_control': '入口控制'
+                    };
+                    data.environmental_suggestions.focus_areas.forEach(area => {
+                        const suggestions = data.environmental_suggestions.detailed_suggestions[area];
+                        if (suggestions) {
+                            html += `
+                                <div style="background: rgba(0,255,136,0.05); border: 1px solid rgba(0,255,136,0.2); padding: 8px; margin-bottom: 5px; border-radius: 5px;">
+                                    <div style="font-weight: bold; color: var(--neon-green); font-size: 0.75rem;">${focusNames[area] || area}</div>
+                                    <div style="font-size: 0.7rem; color: rgba(255,255,255,0.7); margin-top: 3px;">${suggestions.problem}</div>
+                                    <div style="font-size: 0.65rem; color: rgba(255,255,255,0.5); margin-top: 3px;">
+                                        建议: ${suggestions.solutions[0]}
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    });
+                    html += '</div>';
+                }
+
+                // Budget estimate
+                html += `
+                    <div style="background: rgba(0,243,255,0.05); padding: 10px; border-radius: 5px; border: 1px solid rgba(0,243,255,0.2);">
+                        <div style="color: var(--neon-blue); font-size: 0.7rem; margin-bottom: 5px;">
+                            <i class="fas fa-dollar-sign"></i> RESOURCE ESTIMATE
+                        </div>
+                        <div style="font-size: 0.75rem;">
+                            人力优先级: <span style="color: ${riskColor};">${data.estimated_budget.manpower}</span>
+                        </div>
+                    </div>
+                `;
+
+                document.getElementById('recommendationsContent').innerHTML = html;
+            } catch (error) {
+                console.error('Error loading recommendations:', error);
+            }
+        }
+
+        initMap();
+        loadData();
+    </script>
+</body>
+</html>

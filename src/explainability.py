@@ -42,6 +42,14 @@ class CrimePredictionExplainer:
         self.device = device
         self.background_data = background_data.to(device)
         self.feature_names = feature_names or self._default_feature_names()
+        self.forward_kwargs = {}  # 额外的模型前向参数
+
+        # 图数据占位符（通过set_graph_data设置）
+        self.A_spatial = None
+        self.A_distance = None
+        self.A_hypergraph = None
+        self.semantic_embed = None
+        self.OD_placeholder = None
 
         # 初始化SHAP解释器
         if SHAP_AVAILABLE:
@@ -122,12 +130,22 @@ class CrimePredictionExplainer:
 
     def set_graph_data(self, A_spatial, A_distance, A_hypergraph,
                        semantic_embed=None, OD_placeholder=None):
-        """设置图结构和辅助数据"""
+        """
+        设置图结构和辅助数据
+        用于explain_feature_importance_global等批量分析方法
+        """
         self.A_spatial = A_spatial.to(self.device)
         self.A_distance = A_distance.to(self.device)
         self.A_hypergraph = A_hypergraph.to(self.device)
         self.semantic_embed = semantic_embed.to(self.device) if semantic_embed is not None else None
         self.OD_placeholder = OD_placeholder.to(self.device) if OD_placeholder is not None else None
+
+    def set_model_forward_kwargs(self, **kwargs):
+        """
+        设置模型前向传播的额外参数
+        用于适配不同版本的模型API
+        """
+        self.forward_kwargs = kwargs
 
     def explain_with_shap(self, X_sample: torch.Tensor,
                          grid_ids: Optional[List[int]] = None) -> Dict:
@@ -179,35 +197,52 @@ class CrimePredictionExplainer:
         self.model.eval()
         importance_accum = []
         sample_count = 0
+        epsilon = 0.01  # 扰动幅度
+
+        print(f"Computing feature importance using perturbation method (epsilon={epsilon})...")
 
         for X_batch, A_crime_batch, OD_batch, Y_batch in test_loader:
             if sample_count >= max_samples:
                 break
 
-            X_batch = X_batch.to(self.device).requires_grad_(True)
+            X_batch = X_batch.to(self.device)
+            B, T, N, F = X_batch.shape
 
-            # 前向传播
-            pi, mu, theta, _, _ = self.model(
-                X_batch, self.A_spatial, self.A_distance,
-                A_crime_batch.to(self.device), self.A_hypergraph, OD_batch.to(self.device),
-                semantic_embed=self.semantic_embed
-            )
+            with torch.no_grad():
+                # 原始预测
+                pi_orig, mu_orig, _, _, _ = self.model(
+                    X_batch, self.A_spatial, self.A_distance,
+                    A_crime_batch.to(self.device), self.A_hypergraph, OD_batch.to(self.device),
+                    semantic_embed=self.semantic_embed
+                )
+                pred_orig = ((1 - pi_orig) * mu_orig).sum(dim=(0, 1))  # 对每个样本和时间聚合
 
-            # 期望犯罪数
-            pred = (1 - pi) * mu
-            pred_sum = pred.sum()
+                # 对每个特征维度进行扰动
+                batch_importance = []
+                for i in range(F):
+                    X_perturbed = X_batch.clone()
+                    X_perturbed[..., i] += epsilon
 
-            # 反向传播
-            pred_sum.backward()
+                    pi_new, mu_new, _, _, _ = self.model(
+                        X_perturbed, self.A_spatial, self.A_distance,
+                        A_crime_batch.to(self.device), self.A_hypergraph, OD_batch.to(self.device),
+                        semantic_embed=self.semantic_embed
+                    )
+                    pred_new = ((1 - pi_new) * mu_new).sum(dim=(0, 1))
 
-            # 收集梯度绝对值
-            importance = X_batch.grad.abs().mean(dim=(0, 1, 2))  # 对batch, time, node平均
-            importance_accum.append(importance.cpu().numpy())
+                    # 绝对变化作为重要性
+                    importance_i = (pred_new - pred_orig).abs().mean()  # 对batch平均
+                    batch_importance.append(importance_i.item())
 
-            sample_count += X_batch.size(0)
+                importance_accum.append(np.array(batch_importance))
+
+            sample_count += B
+            if sample_count % 50 == 0:
+                print(f"  Processed {sample_count} samples...")
 
         # 平均重要性
         mean_importance = np.stack(importance_accum).mean(axis=0)
+        print("Feature importance computation complete!")
 
         # 分类整理
         static_dim = len(self.feature_names['static'])
