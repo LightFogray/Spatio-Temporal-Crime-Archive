@@ -9,7 +9,14 @@
       "Bash(python -c \"import numpy as np; print\\(np.__version__\\)\")",
       "Bash(python experiments/cold_start_simple.py)",
       "Bash(python src/epstd_stage1.py)",
-      "Bash(python src/epstd_stage2.py)"
+      "Bash(python src/epstd_stage2.py)",
+      "Bash(python src/check_nan_distribution.py)",
+      "Bash(python -c ':*)",
+      "Bash(python src/check_dimensions.py)",
+      "Bash(python src/epstd_stage3_enhanced_multigraph.py)",
+      "Bash(ls -la data/processed/*.npy)",
+      "Bash(python src/build_graph.py)",
+      "Bash(ls -lh checkpoints/*.pt)"
     ]
   }
 }

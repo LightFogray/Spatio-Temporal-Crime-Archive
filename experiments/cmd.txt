@@ -1,0 +1,13 @@
+# Phase 1: 数据
+python src/chicago_crime_downloader.py
+python src/build_graph.py
+
+# Phase 2: 训练
+python src/epstd_stage1.py
+python src/epstd_stage2.py
+python src/epstd_stage3_enhanced_multigraph.py
+
+# Phase 3: 评估
+python experiments/masking_experiment.py
+
+解释文档：EXP_ANALYSIS.md

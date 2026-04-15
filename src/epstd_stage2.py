@@ -268,7 +268,12 @@ def main():
     data_dir = 'data/processed'
     env_embeddings = np.load(f'{data_dir}/env_embeddings.npy')
     static_features = np.load(f'{data_dir}/X.npy')[-1, :, :24]
-    risk_labels = np.load(f'{data_dir}/Y.npy')[-1, :]
+    # Y 现在可能是 (T, N, 2) 包含双犯罪类型
+    Y = np.load(f'{data_dir}/Y.npy')
+    if Y.ndim == 3:
+        risk_labels = Y[-1, :, 0]  # 暴力犯罪作为主要标签
+    else:
+        risk_labels = Y[-1, :]
 
     print(f"Loaded {len(env_embeddings)} environment embeddings")
 

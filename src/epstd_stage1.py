@@ -420,7 +420,11 @@ def main():
 
     # 取最后时刻的静态特征
     static_features = X[-1, :, :24]
-    risk_labels = Y[-1, :]
+    # Y 现在可能是 (T, N, 2) 包含双犯罪类型，取暴力犯罪 (channel 0)
+    if Y.ndim == 3:
+        risk_labels = Y[-1, :, 0]  # 暴力犯罪
+    else:
+        risk_labels = Y[-1, :]
 
     print(f"Loaded {len(static_features)} grids with {static_features.shape[1]} features")
     print(f"Risk range: [{risk_labels.min():.4f}, {risk_labels.max():.4f}]")

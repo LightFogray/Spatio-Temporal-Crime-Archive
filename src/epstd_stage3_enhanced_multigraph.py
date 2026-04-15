@@ -86,7 +86,11 @@ def train_multigraph_diffusion(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     # 准备数据
-    static_features = torch.tensor(X_train, dtype=torch.float32).to(device)
+    # 提取静态特征部分（前24维）用于环境编码器
+    # X.shape = (samples, N, 50)，其中前24维是静态空间特征
+    X_static = X_train[:, :, :24]  # 只取静态特征部分
+    static_features = torch.tensor(X_static, dtype=torch.float32).to(device)
+
     Y_tensor = torch.tensor(Y_train, dtype=torch.float32).to(device)
     prototype_labels = np.load('data/processed/prototype_labels.npy')
     prototype_ids = torch.tensor(prototype_labels, dtype=torch.long).to(device)
@@ -327,8 +331,16 @@ def main():
     print(f"Using device: {device}")
 
     # 加载数据
-    X = np.load('data/processed/X.npy')
+    X_full = np.load('data/processed/X.npy')  # (samples, N, 50)
     Y = np.load('data/processed/Y.npy')
+
+    # Y 现在可能是 (samples, N, 2) 包含双犯罪类型，取暴力犯罪 (channel 0)
+    if Y.ndim == 3:
+        Y = Y[:, :, 0]  # 暴力犯罪
+
+    # 提取静态特征部分（前24维）用于环境编码器
+    # 完整的X包含: 静态特征(24) + 天气(8) + 犯罪滞后(14) + OD(4) = 50
+    X = X_full[:, :, :24]  # 只取静态特征用于Stage 3的初始输入
 
     # 加载5张图
     print("\nLoading adjacency matrices...")

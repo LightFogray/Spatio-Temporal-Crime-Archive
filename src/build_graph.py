@@ -31,6 +31,13 @@ def build_adj_adaptive():
         green,
         green_squared
     ])
+
+    # 检查并处理 NaN
+    nan_count = np.isnan(feature).sum()
+    if nan_count > 0:
+        print(f"  Warning: Feature contains {nan_count} NaN values, filling with 0")
+        feature = np.nan_to_num(feature, nan=0.0, posinf=0.0, neginf=0.0)
+
     # 计算特征相似度
     S_feature = cosine_similarity(feature)
     A_adaptive = A_spatial * S_feature
@@ -210,8 +217,11 @@ def build_od_graph(K=10, threshold=0.3):
     # 时间平均得到每个网格的OD特征
     od_features = od_flow.mean(axis=0)  # (N, 4)
 
-    # 可选：使用PCA降维或保持原始特征
-    # 这里直接使用原始特征计算余弦相似度
+    # 检查并处理 NaN
+    nan_count = np.isnan(od_features).sum()
+    if nan_count > 0:
+        print(f"  Warning: OD features contain {nan_count} NaN values, filling with 0")
+        od_features = np.nan_to_num(od_features, nan=0.0, posinf=0.0, neginf=0.0)
 
     # 计算余弦相似度
     similarity = cosine_similarity(od_features)  # (N, N)

@@ -79,8 +79,9 @@ class CrossCrimeGate(nn.Module):
         super().__init__()
 
         # 门控网络: 根据环境特征和当前状态决定融合比例
+        # 输入: env_emb(64) + env_agg(64) + crime_stats(2) + sparsity(1) = 131
         self.gate_mlp = nn.Sequential(
-            nn.Linear(env_dim * 2 + 2, hidden_dim),  # env + crime_stats
+            nn.Linear(env_dim * 2 + 2 + 1, hidden_dim),  # env + crime_stats + sparsity
             nn.ReLU(),
             nn.Linear(hidden_dim, 2),
             nn.Softmax(dim=-1)
@@ -290,9 +291,11 @@ class MultiGraphConditionalDiffusion(nn.Module):
         ])
 
         # 时间-环境融合层
+        # 输入维度: hidden_dim (h) + hidden_dim (h_env) + time_dim (t_emb)
+        fusion_input_dim = hidden_dim * 2 + time_dim
         self.fusion_layers = nn.ModuleList([
             nn.Sequential(
-                nn.Linear(hidden_dim * 3, hidden_dim),
+                nn.Linear(fusion_input_dim, hidden_dim),
                 nn.GELU(),
                 nn.Dropout(dropout)
             ) for _ in range(num_layers)
@@ -339,8 +342,19 @@ class MultiGraphConditionalDiffusion(nn.Module):
         h_env = self.env_encoder(env_emb)  # (B, N, hidden_dim)
 
         # 原型编码
-        h_proto = self.prototype_embedding(prototype_ids)  # (N, hidden_dim)
-        h_proto = h_proto.unsqueeze(0).expand(B, -1, -1)  # (B, N, hidden_dim)
+        # prototype_ids 可能是 (N,) 或 (B, N)
+        if prototype_ids.dim() == 1:
+            # (N,) -> 扩展为 (B, N, hidden_dim)
+            h_proto = self.prototype_embedding(prototype_ids)  # (N, hidden_dim)
+            h_proto = h_proto.unsqueeze(0).expand(B, -1, -1)  # (B, N, hidden_dim)
+        elif prototype_ids.dim() == 2:
+            # (B, N) -> 逐样本嵌入 -> (B, N, hidden_dim)
+            B_batch, N_batch = prototype_ids.shape
+            # 展平后嵌入，再恢复形状 (使用reshape代替view以处理非连续内存)
+            h_proto = self.prototype_embedding(prototype_ids.reshape(-1))  # (B*N, hidden_dim)
+            h_proto = h_proto.view(B_batch, N_batch, -1)  # (B, N, hidden_dim)
+        else:
+            raise ValueError(f"Unexpected prototype_ids shape: {prototype_ids.shape}")
 
         # 输入投影
         h = self.input_proj(x_t.unsqueeze(-1))  # (B, N, hidden_dim)
@@ -417,7 +431,15 @@ class DualTaskMultiGraphDiffusion(nn.Module):
 
         # 环境和原型编码
         h_env = self.base.env_encoder(env_emb)
-        h_proto = self.base.prototype_embedding(prototype_ids).unsqueeze(0).expand(B, -1, -1)
+
+        # 原型编码（处理一维或二维输入）
+        if prototype_ids.dim() == 1:
+            h_proto = self.base.prototype_embedding(prototype_ids).unsqueeze(0).expand(B, -1, -1)
+        elif prototype_ids.dim() == 2:
+            B_batch, N_batch = prototype_ids.shape
+            h_proto = self.base.prototype_embedding(prototype_ids.view(-1)).view(B_batch, N_batch, -1)
+        else:
+            raise ValueError(f"Unexpected prototype_ids shape: {prototype_ids.shape}")
 
         # 输入投影
         h = self.base.input_proj(x_t.unsqueeze(-1))
